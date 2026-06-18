@@ -1,6 +1,7 @@
 import { apiRequest } from "./request";
 
 export interface CurrentWeather {
+  source: "mock" | "weatherapi";
   locationName: string;
   temperatureC: number;
   feelsLikeC: number;
@@ -20,6 +21,7 @@ export interface WeatherForecastHour {
 }
 
 export interface WeatherForecast {
+  source: "mock" | "weatherapi";
   locationName: string;
   hours: WeatherForecastHour[];
 }

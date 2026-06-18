@@ -107,6 +107,36 @@ import {
   type Prediction, type BusReport as BusReportData, type NavigationRoute,
   type NearbyStop,
 } from "@/api/ttc";
+import {
+  getCurrentWeather,
+  type CurrentWeather,
+} from "@/api/weather";
+
+function estimateWeatherDelay(weather: CurrentWeather): number {
+  const condition = weather.condition.toLowerCase();
+  let delay = 0;
+
+  if (condition.includes("rain") || condition.includes("drizzle")) delay += 2;
+  if (condition.includes("snow") || condition.includes("sleet") || condition.includes("ice")) delay += 3;
+  if (condition.includes("thunder") || condition.includes("storm")) delay += 4;
+  if (condition.includes("fog") || condition.includes("mist") || condition.includes("overcast")) delay += 1;
+  if ((weather.precipitationMm ?? 0) >= 2) delay += 2;
+  else if ((weather.precipitationMm ?? 0) > 0) delay += 1;
+  if (weather.windKph >= 45) delay += 2;
+  else if (weather.windKph >= 30) delay += 1;
+
+  return Math.min(delay, 6);
+}
+
+function describeWeatherDelay(weather: CurrentWeather, delay: number): string {
+  const source = weather.source === "weatherapi" ? "WeatherAPI" : "mock weather data";
+
+  if (delay === 0) {
+    return `${source} reports ${weather.condition.toLowerCase()}, ${weather.temperatureC} C, wind ${weather.windKph} km/h. No weather delay is expected.`;
+  }
+
+  return `${source} reports ${weather.condition.toLowerCase()}, ${weather.temperatureC} C, wind ${weather.windKph} km/h. Current conditions may add about ${delay} min to this trip.`;
+}
 
 // ─── Shared loading skeleton ──────────────────────────────────────────────────
 
@@ -291,6 +321,7 @@ function MapScreen({ stopId, showControls, mapCenter, userPos, onSearch, onOpenR
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
   const [dir, setDir] = useState<string | null>(null);
   const [nearbyStops, setNearbyStops] = useState<NearbyStop[]>([]);
+  const [weather, setWeather] = useState<CurrentWeather | null>(null);
 
   // Bootstrap: load stop metadata, pick defaults, then fetch first prediction
   useEffect(() => {
@@ -329,8 +360,32 @@ function MapScreen({ stopId, showControls, mapCenter, userPos, onSearch, onOpenR
     getNearbyStops(mapCenter[0], mapCenter[1]).then(setNearbyStops);
   }, [mapCenter[0], mapCenter[1]]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    getCurrentWeather(mapCenter[0], mapCenter[1])
+      .then(currentWeather => {
+        if (!cancelled) setWeather(currentWeather);
+      })
+      .catch(() => {
+        if (!cancelled) setWeather(null);
+      });
+
+    return () => { cancelled = true; };
+  }, [mapCenter[0], mapCenter[1]]);
+
   const routes = prediction?.routes ?? [];
   const dirs = prediction?.dirs ?? ["Westbound", "Eastbound"];
+  const weatherDelay = weather ? estimateWeatherDelay(weather) : prediction?.offsets.weather;
+  const displayedPrediction = prediction && weatherDelay !== undefined
+    ? {
+      ...prediction,
+      offsets: {
+        ...prediction.offsets,
+        weather: weatherDelay,
+      },
+    }
+    : prediction;
 
   return (
     <div className="bg-white flex flex-col min-h-full">
@@ -408,7 +463,7 @@ function MapScreen({ stopId, showControls, mapCenter, userPos, onSearch, onOpenR
 
           {/* ETA detail panel */}
           <div className="mx-[11px] mb-[11px] bg-white rounded-bl-[20px] rounded-br-[20px] px-4 py-3">
-            {loadingPrediction || !prediction ? (
+            {loadingPrediction || !displayedPrediction ? (
               <div className="flex flex-col gap-3">
                 <div className="flex justify-between items-baseline">
                   <Skeleton className="h-4 w-40" />
@@ -424,22 +479,22 @@ function MapScreen({ stopId, showControls, mapCenter, userPos, onSearch, onOpenR
             ) : (
               <>
                 <div className="flex items-baseline justify-between mb-3">
-                  <span className="font-['SF_Compact',system-ui,sans-serif] text-[14px] text-black tracking-[-0.08px] flex-1 mr-2">{prediction.stopName}</span>
+                  <span className="font-['SF_Compact',system-ui,sans-serif] text-[14px] text-black tracking-[-0.08px] flex-1 mr-2">{displayedPrediction.stopName}</span>
                   <div className="flex items-baseline gap-1 shrink-0">
                     <span className="font-['SF_Compact',system-ui,sans-serif] text-[13px] text-[#656565]">est.</span>
-                    <span className="font-['Rowdies',sans-serif] text-[36px] text-[#4f4f4f] leading-none">{prediction.etaMin}</span>
+                    <span className="font-['Rowdies',sans-serif] text-[36px] text-[#4f4f4f] leading-none">{displayedPrediction.etaMin}</span>
                     <span className="font-['SF_Compact',system-ui,sans-serif] text-[14px] text-black">min.</span>
                   </div>
                 </div>
                 <div className="flex justify-between mb-3">
-                  <OffsetItem icon={<BusIcon />}          value={prediction.offsets.schedule}     label="schedule" />
-                  <OffsetItem icon={<CloudIcon />}         value={prediction.offsets.weather}      label="weather" />
-                  <OffsetItem icon={<TrafficIcon />}       value={prediction.offsets.traffic}      label="traffic" />
+                  <OffsetItem icon={<BusIcon />}          value={displayedPrediction.offsets.schedule}     label="schedule" />
+                  <OffsetItem icon={<CloudIcon />}         value={displayedPrediction.offsets.weather}      label="weather" />
+                  <OffsetItem icon={<TrafficIcon />}       value={displayedPrediction.offsets.traffic}      label="traffic" />
                 </div>
                 <div className="flex justify-between mb-3">
-                  <OffsetItem icon={<WalkIcon />}          value={prediction.offsets.accidents}    label="accidents" />
-                  <OffsetItem icon={<ConstructionIcon />}  value={prediction.offsets.construction} label="construction" />
-                  <OffsetItem icon={<StarIcon />}           value={prediction.offsets.other}        label="other" />
+                  <OffsetItem icon={<WalkIcon />}          value={displayedPrediction.offsets.accidents}    label="accidents" />
+                  <OffsetItem icon={<ConstructionIcon />}  value={displayedPrediction.offsets.construction} label="construction" />
+                  <OffsetItem icon={<StarIcon />}           value={displayedPrediction.offsets.other}        label="other" />
                 </div>
                 <button
                   onClick={() => selectedRoute !== null && dir !== null && onOpenReport(selectedRoute, dir)}
@@ -457,17 +512,54 @@ function MapScreen({ stopId, showControls, mapCenter, userPos, onSearch, onOpenR
 }
 
 // ── Bus Report screen ──
-interface BusReportProps { route: number; dir: string; stopId: string; onClose: () => void }
-function BusReport({ route, dir, stopId, onClose }: BusReportProps) {
+interface BusReportProps {
+  route: number;
+  dir: string;
+  stopId: string;
+  mapCenter: [number, number];
+  onClose: () => void;
+}
+function BusReport({ route, dir, stopId, mapCenter, onClose }: BusReportProps) {
   const [data, setData] = useState<BusReportData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
+
     setLoading(true);
-    apiBusReport(stopId, route, dir)
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [stopId, route, dir]);
+    Promise.all([
+      apiBusReport(stopId, route, dir),
+      getCurrentWeather(mapCenter[0], mapCenter[1]).catch(() => null),
+    ])
+      .then(([report, currentWeather]) => {
+        if (cancelled) return;
+
+        if (!currentWeather) {
+          setData(report);
+          setLoading(false);
+          return;
+        }
+
+        const weatherDelay = estimateWeatherDelay(currentWeather);
+
+        setData({
+          ...report,
+          factors: {
+            ...report.factors,
+            weather: {
+              value: weatherDelay,
+              description: describeWeatherDelay(currentWeather, weatherDelay),
+            },
+          },
+        });
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [stopId, route, dir, mapCenter]);
 
   const iconMap: Record<string, React.ReactNode> = {
     schedule: <BusIcon />, weather: <CloudIcon />, traffic: <TrafficIcon />,
@@ -841,6 +933,7 @@ export default function App() {
             route={screen.route}
             dir={screen.dir}
             stopId={screen.stopId}
+            mapCenter={mapCenter}
             onClose={handleCloseReport}
           />
         ) : screen.id === "destNav" ? (
