@@ -104,9 +104,9 @@ function fmt(v: number) {
 
 import {
   getStopMeta, searchStops, searchDestinations, getNearbyStops,
-  getPrediction, getBusReport as apiBusReport, getNavigationRoute,
+  getPrediction, getBusReport as apiBusReport, getNavigationRoute, askTransitAssistant,
   type Prediction, type BusReport as BusReportData, type NavigationRoute,
-  type NearbyStop,
+  type NearbyStop, type TransitAssistantContext,
 } from "@/api/ttc";
 
 // ─── Shared loading skeleton ──────────────────────────────────────────────────
@@ -438,10 +438,13 @@ function MapScreen({ stopId, showControls, mapCenter, userPos, onSearch, onOpenR
                   <OffsetItem icon={<TrafficIcon />}       value={prediction.offsets.traffic}      label="traffic" />
                 </div>
                 <div className="flex justify-between mb-3">
-                  <OffsetItem icon={<WalkIcon />}          value={prediction.offsets.accidents}    label="accidents" />
+                  <OffsetItem icon={<StarIcon />}          value={prediction.offsets.passengerLoad} label="crowding" />
+                  <OffsetItem icon={<WalkIcon />}          value={prediction.offsets.accidents}    label="incidents" />
                   <OffsetItem icon={<ConstructionIcon />}  value={prediction.offsets.construction} label="construction" />
-                  <OffsetItem icon={<StarIcon />}           value={prediction.offsets.other}        label="other" />
                 </div>
+                <p className="font-['SF_Compact',system-ui,sans-serif] text-[12px] text-[#656565] leading-[18px] mb-2">
+                  {prediction.summary} Confidence {prediction.confidence}%.
+                </p>
                 <button
                   onClick={() => selectedRoute !== null && dir !== null && onOpenReport(selectedRoute, dir)}
                   className="w-full text-center font-['SF_Compact',system-ui,sans-serif] text-[13px] text-[#4f4f4f] underline underline-offset-2 cursor-pointer pt-1"
@@ -472,7 +475,12 @@ function BusReport({ route, dir, stopId, onClose }: BusReportProps) {
 
   const iconMap: Record<string, React.ReactNode> = {
     schedule: <BusIcon />, weather: <CloudIcon />, traffic: <TrafficIcon />,
-    accidents: <WalkIcon />, construction: <ConstructionIcon />, other: <StarIcon />,
+    passengerLoad: <StarIcon />, accidents: <WalkIcon />, construction: <ConstructionIcon />,
+  };
+
+  const labelMap: Record<string, string> = {
+    passengerLoad: "crowding",
+    accidents: "incidents",
   };
 
   return (
@@ -497,6 +505,7 @@ function BusReport({ route, dir, stopId, onClose }: BusReportProps) {
                   <span className="font-['Rowdies',sans-serif] text-[38px] text-[#4f4f4f] leading-none">{data.etaMin}</span>
                   <span className="font-['SF_Compact',system-ui,sans-serif] text-[13px] text-black">min.</span>
                 </div>
+                <span className="font-['SF_Compact',system-ui,sans-serif] text-[12px] text-[#656565]">Confidence {data.confidence}%</span>
               </>
             )}
           </div>
@@ -520,7 +529,7 @@ function BusReport({ route, dir, stopId, onClose }: BusReportProps) {
                   <span className="font-['Rowdies',sans-serif] text-[28px] leading-none text-[#7d7b7b]">{fmt(f.value)}</span>
                   <div className="flex items-center gap-1">
                     <div className="size-[16px] shrink-0">{iconMap[key]}</div>
-                    <span className="font-['SF_Compact',system-ui,sans-serif] text-[11px] text-[#656565] whitespace-nowrap">{key}</span>
+                    <span className="font-['SF_Compact',system-ui,sans-serif] text-[11px] text-[#656565] whitespace-nowrap">{labelMap[key] ?? key}</span>
                   </div>
                 </div>
                 <p className="font-['SF_Compact',system-ui,sans-serif] text-[13px] text-black leading-[22px] flex-1 pt-1">{f.description}</p>
@@ -747,23 +756,6 @@ interface ChatMessage {
   text: string;
 }
 
-const MOCK_RESPONSES: [RegExp, string][] = [
-  [/501|queen/i, "Route 501 Queen is scheduled to arrive at College & Yonge at 5:25. Given current conditions, it may be running about 2 min late due to traffic near University Ave."],
-  [/502|danforth/i, "Route 502 is running on schedule. Next arrival at King & Bay in approximately 6 min."],
-  [/delay|late|slow/i, "Current delays are mostly weather-related. Expect 1–3 min extra on most streetcar routes downtown."],
-  [/weather/i, "It's currently rainy in Toronto. Expect minor delays of 1–2 min on surface routes due to reduced visibility and passenger boarding times."],
-  [/traffic/i, "Traffic is moderate on King St. and heavy near University Ave. Streetcar routes 501 and 504 may see delays."],
-  [/stop|station/i, "You can find nearby stops on the map. Tap any bus marker to select that stop and see live ETA predictions."],
-  [/navigate|navigation|direction/i, "Use the search bar and pick a destination to get turn-by-turn transit directions including walking segments."],
-];
-
-function mockAiReply(input: string): string {
-  for (const [pattern, reply] of MOCK_RESPONSES) {
-    if (pattern.test(input)) return reply;
-  }
-  return "I can help with TTC route predictions, delays, and navigation. Try asking about a specific route like '501' or 'delays near King Street'.";
-}
-
 /** Centered milk icon — matches the Figma export pattern exactly */
 function MilkIcon({ size = 30 }: { size?: number }) {
   return (
@@ -790,6 +782,7 @@ function AiChatbot() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [assistantContext, setAssistantContext] = useState<TransitAssistantContext>({});
 
   // Committed position (null = use CSS bottom-right default)
   const [committedPos, setCommittedPos] = useState<{ x: number; y: number } | null>(null);
@@ -846,16 +839,21 @@ function AiChatbot() {
     if (!hasDragged.current) setOpen(true);
   }
 
-  function sendMessage() {
+  async function sendMessage() {
     const text = input.trim();
     if (!text) return;
     setMessages(prev => [...prev, { role: "user", text }]);
     setInput("");
     setIsTyping(true);
-    setTimeout(() => {
-      setMessages(prev => [...prev, { role: "ai", text: mockAiReply(text) }]);
+    try {
+      const answer = await askTransitAssistant(text, assistantContext);
+      if (answer.context) setAssistantContext(answer.context);
+      setMessages(prev => [...prev, { role: "ai", text: answer.text }]);
+    } catch {
+      setMessages(prev => [...prev, { role: "ai", text: "I could not calculate that trip answer right now. Try asking about a route number, stop, delay, or destination." }]);
+    } finally {
       setIsTyping(false);
-    }, 900 + Math.random() * 600);
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
