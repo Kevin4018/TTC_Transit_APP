@@ -96,7 +96,7 @@ function LeafletMap({ center, zoom, userPos, locationStatus, stops, routeLine, d
     if (alreadyCentered) return;
 
     skipNextMoveEndRef.current = true;
-    map.setView(center, zoom, { animate: false });
+    map.setView(center, map.getZoom(), { animate: false });
   }, [center[0], center[1], zoom]);             // eslint-disable-line react-hooks/exhaustive-deps
 
   // User location marker

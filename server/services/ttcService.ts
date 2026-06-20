@@ -310,6 +310,23 @@ const normalizeGtfsStopGroupName = (stopName: string) =>
     .replace(/\s+-\s+(Northbound|Southbound|Eastbound|Westbound) Platform$/i, "")
     .trim();
 
+const getStationSuffix = (stopName: string) =>
+  stopName.match(/\s+-\s+(.+ Station)$/i)?.[1]?.trim();
+
+const getActiveStopRoutes = (db: Database.Database, stopId: string) =>
+  new Set(
+    (
+      db
+        .prepare(`
+          SELECT DISTINCT route_name
+          FROM stop_routes
+          WHERE stop_id = ?
+            AND service_period = ?
+        `)
+        .all(stopId, servicePeriodParam()) as Array<{ route_name: string }>
+    ).map((row) => row.route_name),
+  );
+
 const getGtfsStopGroup = (db: Database.Database, stopId: string) => {
   const representativeStopId = getRepresentativeStopId(stopId);
   const representativeStop = db
@@ -319,7 +336,7 @@ const getGtfsStopGroup = (db: Database.Database, stopId: string) => {
   if (!representativeStop) return null;
 
   const groupName = normalizeGtfsStopGroupName(representativeStop.stop_name);
-  const stops = db
+  const baseStops = db
     .prepare(`
       SELECT stop_id, stop_name, stop_lat, stop_lon
       FROM stops
@@ -328,10 +345,37 @@ const getGtfsStopGroup = (db: Database.Database, stopId: string) => {
       ORDER BY stop_name
     `)
     .all(groupName, `${groupName} - %bound Platform`) as GtfsStop[];
+  const stationSuffix = getStationSuffix(representativeStop.stop_name);
+  const representativeRoutes = getActiveStopRoutes(db, representativeStop.stop_id);
+  const nearbyStationStops = stationSuffix && representativeRoutes.size > 0
+    ? (db
+      .prepare(`
+        SELECT stop_id, stop_name, stop_lat, stop_lon
+        FROM stops
+        WHERE stop_name LIKE ?
+          AND stop_lat BETWEEN ? AND ?
+          AND stop_lon BETWEEN ? AND ?
+        ORDER BY stop_name
+      `)
+      .all(
+        `% - ${stationSuffix}`,
+        representativeStop.stop_lat - 0.0012,
+        representativeStop.stop_lat + 0.0012,
+        representativeStop.stop_lon - 0.0012,
+        representativeStop.stop_lon + 0.0012,
+      ) as GtfsStop[])
+      .filter((stop) => {
+        const routes = getActiveStopRoutes(db, stop.stop_id);
+        return [...representativeRoutes].some((route) => routes.has(route));
+      })
+    : [];
+  const stopsById = new Map<string, GtfsStop>();
+  [...baseStops, ...nearbyStationStops].forEach((stop) => stopsById.set(stop.stop_id, stop));
+  const stops = [...stopsById.values()];
 
   return {
     id: `${GROUP_PREFIX}${representativeStop.stop_id}`,
-    name: groupName,
+    name: stationSuffix ?? groupName,
     stops,
   };
 };
