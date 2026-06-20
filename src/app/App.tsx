@@ -1301,7 +1301,7 @@ function MilkIcon({ size = 30 }: { size?: number }) {
   );
 }
 
-function AiChatbot() {
+function AiChatbot({ appContext }: { appContext?: TransitAssistantContext }) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -1314,6 +1314,19 @@ function AiChatbot() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
+
+  useEffect(() => {
+    if (!appContext) return;
+    setAssistantContext(prev => ({
+      ...prev,
+      ...appContext,
+    }));
+  }, [
+    appContext?.stopId,
+    appContext?.routeId,
+    appContext?.direction,
+    appContext?.destinationId,
+  ]);
 
   async function sendMessage() {
     const text = input.trim();
@@ -1717,9 +1730,18 @@ export default function App() {
     setQuery("");
   };
 
+  const chatbotContext: TransitAssistantContext =
+    screen.id === "map"
+      ? { stopId: screen.stopId }
+      : screen.id === "busReport"
+        ? { stopId: screen.stopId, routeId: screen.route, direction: screen.dir }
+        : screen.id === "destNav" || screen.id === "navigation"
+          ? { destinationId: screen.destId }
+          : {};
+
   return (
     <>
-    <AiChatbot />
+    <AiChatbot appContext={chatbotContext} />
     <div className="min-h-screen bg-gray-100 flex items-start justify-center overflow-auto py-1">
       <div
         className="relative shrink-0"
