@@ -15,6 +15,7 @@ router.get("/impact", (req, res) => {
       parseNumber(req.query.lat, 43.6532),
       parseNumber(req.query.lng, -79.3832),
       req.query.routeId,
+      typeof req.query.at === "string" ? req.query.at : undefined,
     ),
   );
 });

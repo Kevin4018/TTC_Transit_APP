@@ -1054,7 +1054,9 @@ function AiChatbot() {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [assistantContext, setAssistantContext] = useState<TransitAssistantContext>({});
+  const [confirmClose, setConfirmClose] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1062,10 +1064,11 @@ function AiChatbot() {
 
   async function sendMessage() {
     const text = input.trim();
-    if (!text) return;
+    if (!text || isTyping) return;
 
     setMessages(prev => [...prev, { role: "user", text }]);
     setInput("");
+    if (chatInputRef.current) chatInputRef.current.value = "";
     setIsTyping(true);
 
     try {
@@ -1079,6 +1082,7 @@ function AiChatbot() {
       }]);
     } finally {
       setIsTyping(false);
+      requestAnimationFrame(() => chatInputRef.current?.focus());
     }
   }
 
@@ -1089,13 +1093,32 @@ function AiChatbot() {
     }
   }
 
+  function requestCloseChat() {
+    setConfirmClose(true);
+  }
+
+  function endChatSession() {
+    setMessages([]);
+    setInput("");
+    if (chatInputRef.current) chatInputRef.current.value = "";
+    setIsTyping(false);
+    setAssistantContext({});
+    setConfirmClose(false);
+    setOpen(false);
+  }
+
+  function keepChatSession() {
+    setConfirmClose(false);
+    setOpen(false);
+  }
+
   return (
     <>
       {open ? (
         <>
           <div
             className="fixed inset-0 z-[2000] pointer-events-auto"
-            onClick={() => setOpen(false)}
+            onClick={requestCloseChat}
           />
           <div
             className="fixed left-1/2 top-1/2 z-[2001] w-[min(100vw,390px)] h-[82vh] -translate-x-1/2 -translate-y-1/2 bg-white border-2 border-[#9d9d9d] rounded-[20px] shadow-[0px_4px_4px_0px_rgba(0,0,0,0.25)] flex flex-col overflow-hidden"
@@ -1106,7 +1129,7 @@ function AiChatbot() {
                 Chat with Milk bot
               </span>
               <button
-                onClick={() => setOpen(false)}
+                onClick={requestCloseChat}
                 className="size-6 flex items-center justify-center cursor-pointer opacity-70 hover:opacity-100"
                 aria-label="Minimize"
               >
@@ -1143,6 +1166,7 @@ function AiChatbot() {
             <div className="shrink-0 px-4 pb-4">
               <div className="bg-white border border-[#d9d9d9] rounded-[16px] p-4 flex flex-col gap-4">
                 <textarea
+                  ref={chatInputRef}
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
@@ -1154,18 +1178,45 @@ function AiChatbot() {
                 <div className="flex justify-end">
                   <button
                     onClick={sendMessage}
-                    disabled={!input.trim()}
+                    disabled={!input.trim() || isTyping}
                     className="size-9 rounded-full flex items-center justify-center transition-colors cursor-pointer disabled:cursor-default"
-                    style={{ background: input.trim() ? "#1e1e1e" : "#d9d9d9" }}
+                    style={{ background: input.trim() && !isTyping ? "#1e1e1e" : "#d9d9d9" }}
                     aria-label="Send"
                   >
                     <svg className="size-4" fill="none" viewBox="0 0 14 14">
-                      <path d="M7 12V2M7 2L2 7M7 2L12 7" stroke={input.trim() ? "white" : "#b3b3b3"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M7 12V2M7 2L2 7M7 2L12 7" stroke={input.trim() && !isTyping ? "white" : "#b3b3b3"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </button>
                 </div>
               </div>
             </div>
+
+            {confirmClose && (
+              <div className="absolute inset-0 z-[1] bg-white/85 flex items-center justify-center px-6">
+                <div className="w-full bg-white border border-[#d9d9d9] rounded-[16px] shadow-[0px_4px_12px_rgba(0,0,0,0.18)] p-5">
+                  <p className="font-['Inter',system-ui,sans-serif] text-[16px] font-semibold text-[#1e1e1e] leading-[1.4]">
+                    End the chat session?
+                  </p>
+                  <p className="font-['Inter',system-ui,sans-serif] text-[14px] text-[#656565] leading-[1.4] mt-2">
+                    Choosing yes will clear this chat history.
+                  </p>
+                  <div className="flex gap-3 mt-5">
+                    <button
+                      onClick={keepChatSession}
+                      className="flex-1 h-10 rounded-[10px] border border-[#d9d9d9] font-['Inter',system-ui,sans-serif] text-[14px] text-[#1e1e1e]"
+                    >
+                      No
+                    </button>
+                    <button
+                      onClick={endChatSession}
+                      className="flex-1 h-10 rounded-[10px] bg-[#1e1e1e] font-['Inter',system-ui,sans-serif] text-[14px] text-white"
+                    >
+                      Yes
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </>
       ) : (

@@ -66,8 +66,8 @@ function curvePeak(hour: number, center: number, width: number) {
   return Math.exp(-Math.pow(hour - center, 2) / (2 * width * width));
 }
 
-function getTimeTrafficPressure() {
-  const clock = torontoClock();
+function getTimeTrafficPressure(now = new Date()) {
+  const clock = torontoClock(now);
   const base = clock.isWeekend ? 0.1 : 0.08;
   const morningPeak = curvePeak(clock.hourFloat, 8.15, 0.9) * (clock.isWeekend ? 0.18 : 0.74);
   const lunchPressure = curvePeak(clock.hourFloat, 12.6, 1.35) * (clock.isWeekend ? 0.22 : 0.24);
@@ -104,11 +104,13 @@ export function getTrafficImpact(
   lat: number,
   lng: number,
   routeId: unknown,
+  at?: string,
 ): TrafficImpact {
   const routeNumber = getRouteNumber(routeId);
+  const targetTime = at ? new Date(at) : new Date();
   const downtownRoute = routeNumber >= 500 && routeNumber < 600;
   const routePressure = ROUTE_PRESSURE[routeNumber] ?? (downtownRoute ? 0.62 : 0.35);
-  const timePressure = getTimeTrafficPressure();
+  const timePressure = getTimeTrafficPressure(Number.isNaN(targetTime.getTime()) ? new Date() : targetTime);
   const downtownPressure = getDowntownPressure(lat, lng);
   const rawTrafficScore = (
     timePressure.score * 0.48 +

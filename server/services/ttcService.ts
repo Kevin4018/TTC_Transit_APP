@@ -221,6 +221,17 @@ const getPredictionConfidence = (offsets: {
   return Math.max(62, Math.min(94, 94 - variableDelay * 4));
 };
 
+const describeScheduleOffset = (routeId: number, offsetMin: number) => {
+  if (offsetMin === 0) {
+    return `Route ${routeId} is currently matching its expected schedule window.`;
+  }
+
+  const minutes = Math.abs(offsetMin);
+  return offsetMin > 0
+    ? `Route ${routeId} is estimated about ${minutes} min later than the expected schedule window.`
+    : `Route ${routeId} is estimated about ${minutes} min earlier than the expected schedule window.`;
+};
+
 const GROUP_PREFIX = "group:";
 
 const isGroupStopId = (stopId: string) => stopId.startsWith(GROUP_PREFIX);
@@ -891,7 +902,7 @@ export const getBusReport = (
     factors: {
       schedule: {
         value: prediction.schedule,
-        description: `${routeId} is scheduled to arrive at ${20 + prediction.schedule}:00, according to the official TTC data.`,
+        description: describeScheduleOffset(routeId, prediction.schedule),
       },
       weather: {
         value: prediction.weather,

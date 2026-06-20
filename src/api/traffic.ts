@@ -25,8 +25,9 @@ export function getTrafficImpact(
   lat: number,
   lng: number,
   routeId: number,
+  at?: string,
 ): Promise<TrafficImpact> {
   return apiRequest<TrafficImpact>("/api/traffic/impact", {
-    params: { lat, lng, routeId },
+    params: { lat, lng, routeId, at },
   });
 }

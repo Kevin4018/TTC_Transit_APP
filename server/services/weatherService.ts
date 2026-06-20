@@ -135,12 +135,12 @@ const getMockWeatherForecast = (lat: number, lng: number): WeatherForecast => {
     source: "mock",
     locationName: "Toronto",
     coordinates: { lat, lng },
-    hours: Array.from({ length: 6 }, (_, index) => ({
+    hours: Array.from({ length: 48 }, (_, index) => ({
       time: new Date(now + index * 60 * 60 * 1000).toISOString(),
-      temperatureC: 22 - Math.floor(index / 3),
-      condition: index < 3 ? "Cloudy" : "Light rain",
-      precipitationProbability: index < 3 ? 20 : 45,
-      windKph: 14 + index,
+      temperatureC: 22 - Math.floor(index / 8),
+      condition: index < 10 ? "Cloudy" : index < 28 ? "Light rain" : "Partly cloudy",
+      precipitationProbability: index < 10 ? 20 : index < 28 ? 45 : 25,
+      windKph: 14 + (index % 8),
     })),
   };
 };
@@ -184,7 +184,7 @@ export const getWeatherForecast = async (
 
   const data = await requestWeatherApi<WeatherApiForecastResponse>(
     buildWeatherApiUrl("forecast.json", lat, lng, {
-      days: 1,
+      days: 2,
       aqi: "no",
       alerts: "no",
     }),
@@ -194,7 +194,7 @@ export const getWeatherForecast = async (
   const hours = data.forecast.forecastday
     .flatMap((day) => day.hour)
     .filter((hour) => new Date(hour.time).getTime() >= currentTime)
-    .slice(0, 6)
+    .slice(0, 48)
     .map((hour) => ({
       time: hour.time,
       temperatureC: hour.temp_c,
