@@ -272,6 +272,11 @@ const isGroupStopId = (stopId: string) => stopId.startsWith(GROUP_PREFIX);
 const getRepresentativeStopId = (stopId: string) =>
   isGroupStopId(stopId) ? stopId.slice(GROUP_PREFIX.length) : stopId;
 
+const normalizeGtfsStopGroupName = (stopName: string) =>
+  stopName
+    .replace(/\s+-\s+(Northbound|Southbound|Eastbound|Westbound) Platform$/i, "")
+    .trim();
+
 const getGtfsStopGroup = (db: Database.Database, stopId: string) => {
   const representativeStopId = getRepresentativeStopId(stopId);
   const representativeStop = db
@@ -280,13 +285,20 @@ const getGtfsStopGroup = (db: Database.Database, stopId: string) => {
 
   if (!representativeStop) return null;
 
+  const groupName = normalizeGtfsStopGroupName(representativeStop.stop_name);
   const stops = db
-    .prepare("SELECT stop_id, stop_name, stop_lat, stop_lon FROM stops WHERE stop_name = ?")
-    .all(representativeStop.stop_name) as GtfsStop[];
+    .prepare(`
+      SELECT stop_id, stop_name, stop_lat, stop_lon
+      FROM stops
+      WHERE stop_name = ?
+        OR stop_name LIKE ?
+      ORDER BY stop_name
+    `)
+    .all(groupName, `${groupName} - %bound Platform`) as GtfsStop[];
 
   return {
     id: `${GROUP_PREFIX}${representativeStop.stop_id}`,
-    name: representativeStop.stop_name,
+    name: groupName,
     stops,
   };
 };
