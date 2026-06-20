@@ -303,6 +303,43 @@ function extractStopQuery(input: string): string | undefined {
   return undefined;
 }
 
+function maybeLooksLikeStopName(input: string): boolean {
+  const cleaned = input.trim();
+  if (cleaned.length < 3 || cleaned.length > 80) return false;
+  if (findRouteInText(cleaned)) return false;
+
+  return /\b(?:at|and|&|station|st|street|ave|avenue|road|rd|college|bay|yonge|bathurst|queen|king|dundas|spadina|bloor|union)\b/i.test(cleaned);
+}
+
+async function answerStopContextQuestion(
+  input: string,
+  context: TransitAssistantContext,
+): Promise<TransitAssistantAnswer | null> {
+  if (!maybeLooksLikeStopName(input)) return null;
+
+  const stops = await searchStops(input);
+  const stop = stops[0];
+  if (!stop) return null;
+
+  const meta = await getStopMeta(stop.id);
+  const routeText = meta.routes.length > 0
+    ? ` Routes here right now: ${meta.routes.slice(0, 6).join(", ")}.`
+    : "";
+
+  return {
+    matchedIntent: "help",
+    confidence: 82,
+    context: {
+      ...context,
+      stopId: meta.id,
+      routeId: meta.routes[0] ?? context.routeId,
+      direction: meta.dirs[0] ?? context.direction,
+      lastIntent: "help",
+    },
+    text: `I found ${meta.name}.${routeText} Ask "when is ${meta.routes[0] ?? "the bus"}?" for the next arrival at this stop.`,
+  };
+}
+
 function isDestinationFollowUp(input: string): boolean {
   return /\b(?:how\s+about|what\s+about|that\s+trip|the\s+trip|same\s+destination|there|destination|arrival|arrive|walk|ride|stops|directions?|navigate|miss|missed|next\s+(?:one|bus|vehicle|streetcar)|another\s+(?:one|bus|vehicle|streetcar)|more\s+options?|other\s+options?|any\s+other|alternatives?|alternate\s+(?:routes?|ways?)|other\s+ways?|different\s+routes?|what\s+else|something\s+else|choices?)\b/i.test(input);
 }
@@ -921,15 +958,20 @@ async function pickAssistantPrediction(
   const followUpWithRouteContext = isGenericFollowUp(input) && hasRouteContext(context);
   const routeId = findRouteInText(input) ?? context.routeId;
   const directionFromText = findDirectionInText(input) ?? context.direction;
+  const explicitStopQuery = extractStopQuery(input);
   let stopId = context.stopId;
+
+  if (explicitStopQuery) {
+    const explicitStops = await searchStops(explicitStopQuery);
+    stopId = explicitStops[0]?.id ?? stopId;
+  }
 
   if (!stopId && routeId && isRouteNumberOnlyInput(input)) {
     throw new Error("Route number needs a stop context");
   }
 
   if (!stopId) {
-    const stopQuery = extractStopQuery(input);
-    const stops = await searchStops(stopQuery || (routeId && followUpWithRouteContext ? String(routeId) : input));
+    const stops = await searchStops(explicitStopQuery || (routeId && followUpWithRouteContext ? String(routeId) : input));
     stopId = stops[0]?.id;
   }
 
@@ -939,10 +981,8 @@ async function pickAssistantPrediction(
 
   let meta = await getStopMeta(stopId);
   if (routeId && !meta.routes.includes(routeId)) {
-    const stopQuery = extractStopQuery(input);
-
-    if (stopQuery) {
-      const routeStops = await searchStops(stopQuery);
+    if (explicitStopQuery) {
+      const routeStops = await searchStops(explicitStopQuery);
       const matchingStop = routeStops.find(stop => stop.routes.split(",").map(route => Number(route.trim())).includes(routeId));
       if (matchingStop) {
         stopId = matchingStop.id;
@@ -1032,6 +1072,9 @@ export async function askTransitAssistant(
 
   const destinationAnswer = await answerDestinationQuestion(q, context);
   if (destinationAnswer) return destinationAnswer;
+
+  const stopContextAnswer = await answerStopContextQuestion(q, context);
+  if (stopContextAnswer) return stopContextAnswer;
 
   const isTransitQuestion = /bus|ttc|route|stop|station|eta|arriv|delay|late|weather|traffic|crowd|busy|navigate|direction|trip|destination|terminal|terminus|last stop|final stop|walk|go to|get to|take me|east|west|north|south|\b\d{3}\b/i.test(q) || followUp;
   if (!isTransitQuestion) {
