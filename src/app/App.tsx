@@ -37,6 +37,7 @@ function LeafletMap({ center, zoom, userPos, locationStatus, stops, routeLine, d
   const destinationMarkerRef = useRef<L.Marker | null>(null);
   const transitMarkersRef = useRef<L.Marker[]>([]);
   const skipNextMoveEndRef = useRef(false);
+  const lastSentCenterRef = useRef<[number, number] | null>(center);
 
   // Boot the map once
   useEffect(() => {
@@ -59,7 +60,18 @@ function LeafletMap({ center, zoom, userPos, locationStatus, stops, routeLine, d
       }
 
       const nextCenter = map.getCenter();
-      onMoveEnd?.([nextCenter.lat, nextCenter.lng]);
+      const next: [number, number] = [nextCenter.lat, nextCenter.lng];
+      const last = lastSentCenterRef.current;
+      if (
+        last &&
+        Math.abs(last[0] - next[0]) < 0.00005 &&
+        Math.abs(last[1] - next[1]) < 0.00005
+      ) {
+        return;
+      }
+
+      lastSentCenterRef.current = next;
+      onMoveEnd?.(next);
     });
 
     // Stop markers render in a separate effect so async nearby stops can update.
@@ -90,14 +102,14 @@ function LeafletMap({ center, zoom, userPos, locationStatus, stops, routeLine, d
     const currentCenter = map.getCenter();
     const alreadyCentered =
       Math.abs(currentCenter.lat - center[0]) < 0.00001 &&
-      Math.abs(currentCenter.lng - center[1]) < 0.00001 &&
-      map.getZoom() === zoom;
+      Math.abs(currentCenter.lng - center[1]) < 0.00001;
 
     if (alreadyCentered) return;
 
     skipNextMoveEndRef.current = true;
-    map.setView(center, map.getZoom(), { animate: false });
-  }, [center[0], center[1], zoom]);             // eslint-disable-line react-hooks/exhaustive-deps
+    lastSentCenterRef.current = center;
+    map.panTo(center, { animate: false });
+  }, [center[0], center[1]]);                   // eslint-disable-line react-hooks/exhaustive-deps
 
   // User location marker
   useEffect(() => {
