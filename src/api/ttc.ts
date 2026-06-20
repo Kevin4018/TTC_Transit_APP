@@ -872,7 +872,9 @@ async function answerDestinationQuestion(
     };
   }
 
-  const destinationId = context.destinationId ?? (await searchDestinations(destinationQuery ?? ""))[0]?.id;
+  const destinationId = destinationQuery
+    ? (await searchDestinations(destinationQuery))[0]?.id
+    : context.destinationId;
   if (!destinationId) {
     return {
       matchedIntent: "navigation",
