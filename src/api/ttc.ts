@@ -282,11 +282,22 @@ function extractDestinationQuery(input: string): string | undefined {
 function isBareDestinationCandidate(input: string): boolean {
   const cleaned = input.trim();
   if (cleaned.length < 3) return false;
-  if (findRouteInText(cleaned)) return false;
   if (isWeatherQuestion(cleaned) || isTrafficQuestion(cleaned) || isDelayQuestion(cleaned) || isCrowdingQuestion(cleaned)) return false;
-  if (isLocationQuestion(cleaned) || isRouteTerminalQuestion(cleaned) || isEtaQuestion(cleaned)) return false;
+  if (isLocationQuestion(cleaned) || isRouteTerminalQuestion(cleaned) || isTransitArrivalRequest(cleaned)) return false;
 
   return /[a-z]/i.test(cleaned);
+}
+
+function isAddressLikeDestination(input: string): boolean {
+  return /\b\d+\s+[\w\s'.-]+(?:street|st|road|rd|avenue|ave|boulevard|blvd|drive|dr|court|ct|crescent|cres|lane|ln|way|parkway|pkwy)\b/i.test(input);
+}
+
+function isTransitArrivalRequest(input: string): boolean {
+  if (isAddressLikeDestination(input)) return false;
+  if (findRouteInText(input)) return true;
+
+  return /\b(?:when|eta|arriv|arrival|coming|due|next|how\s+long)\b/i.test(input) ||
+    /\b(?:bus|streetcar|vehicle|ttc|route)\b/i.test(input);
 }
 
 function isRouteNumberOnlyDestination(query: string | undefined): number | undefined {
