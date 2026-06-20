@@ -229,6 +229,39 @@ const routePeriodPredicate = () =>
 
 const servicePeriodParam = () => getServicePeriod();
 
+const getHeadsignCardinal = (headsign: string) =>
+  headsign.match(/^(North|South|East|West)\b/i)?.[1]?.toLowerCase() ?? headsign.toLowerCase();
+
+const isShortTurnHeadsign = (headsign: string) => /\bshort\s*turn\b/i.test(headsign);
+
+const getHeadsignScore = (headsign: string) => {
+  let score = 0;
+  if (isShortTurnHeadsign(headsign)) score += 10;
+  if (!/\btowards?\b/i.test(headsign)) score += 4;
+  if (/^inbound$/i.test(headsign.trim())) score += 20;
+  if (/^outbound$/i.test(headsign.trim())) score += 20;
+  return score;
+};
+
+const pickRepresentativeHeadsigns = (headsigns: string[]) => {
+  const bestByCardinal = new Map<string, string>();
+
+  headsigns
+    .map((headsign) => cleanHeadsign(headsign))
+    .filter(Boolean)
+    .forEach((headsign) => {
+      const key = getHeadsignCardinal(headsign);
+      const current = bestByCardinal.get(key);
+      if (!current || getHeadsignScore(headsign) < getHeadsignScore(current)) {
+        bestByCardinal.set(key, headsign);
+      }
+    });
+
+  return [...bestByCardinal.values()]
+    .sort((a, b) => getHeadsignScore(a) - getHeadsignScore(b))
+    .slice(0, 2);
+};
+
 const toNumberRoutes = (routes: Iterable<string | number>) =>
   [...routes]
     .map((route) => Number(route))
@@ -440,7 +473,6 @@ const getGtfsStopDirs = (
         AND headsign IS NOT NULL
         AND headsign != ''
       ORDER BY headsign
-      LIMIT 2
     `)
     .all(
       ...stopIds,
@@ -449,7 +481,7 @@ const getGtfsStopDirs = (
       String(routeId ?? ""),
     ) as Array<{ headsign: string }>;
 
-  const headsigns = [...new Set(rows.map((row) => cleanHeadsign(row.headsign)))];
+  const headsigns = pickRepresentativeHeadsigns(rows.map((row) => row.headsign));
 
   return [
     headsigns[0] ?? "Outbound",
@@ -519,7 +551,7 @@ const findGtfsPrediction = (
   const placeholders = stopIds.map(() => "?").join(", ");
 
   if (hasTable(db, "stop_departures")) {
-    const selectRows = (matchDirection: boolean) =>
+    const selectRows = () =>
       db
         .prepare(`
           SELECT headsign, departure_minutes
@@ -527,18 +559,18 @@ const findGtfsPrediction = (
           WHERE stop_id IN (${placeholders})
             AND route_name = ?
             AND service_period = ?
-            AND (? = 0 OR ? = '' OR headsign = ?)
         `)
         .all(
           ...stopIds,
           String(routeId),
           servicePeriodParam(),
-          matchDirection ? 1 : 0,
-          direction,
-          direction,
         ) as GtfsStopDeparture[];
 
-    const rows = selectRows(true).length > 0 ? selectRows(true) : selectRows(false);
+    const allRows = selectRows();
+    const matchingRows = direction
+      ? allRows.filter((row) => cleanHeadsign(row.headsign) === direction)
+      : [];
+    const rows = matchingRows.length > 0 ? matchingRows : allRows;
     const predictions = rows.flatMap((row) =>
       row.departure_minutes
         .split(",")
@@ -560,7 +592,7 @@ const findGtfsPrediction = (
     return predictions.sort((a, b) => a.etaMin - b.etaMin)[0] ?? null;
   }
 
-  const selectRows = (matchDirection: boolean) =>
+  const selectRows = () =>
     db
     .prepare(`
       SELECT
@@ -573,21 +605,21 @@ const findGtfsPrediction = (
       WHERE stop_times.stop_id IN (${placeholders})
         AND (routes.route_short_name = ? OR routes.route_id = ?)
         AND ${routePeriodPredicate()}
-        AND (? = 0 OR ? = '' OR trips.trip_headsign = ?)
     `)
     .all(
       ...stopIds,
       String(routeId),
       String(routeId),
-      matchDirection ? 1 : 0,
-      direction,
-      direction,
     ) as Array<{
       arrival_time: string;
       departure_time: string;
       headsign: string;
     }>;
-  const rows = selectRows(true).length > 0 ? selectRows(true) : selectRows(false);
+  const allRows = selectRows();
+  const matchingRows = direction
+    ? allRows.filter((row) => cleanHeadsign(row.headsign) === direction)
+    : [];
+  const rows = matchingRows.length > 0 ? matchingRows : allRows;
 
   return rows
     .map((row) => {
