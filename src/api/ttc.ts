@@ -98,6 +98,7 @@ export interface StopMeta {
   name: string;
   routes: number[];
   dirs: [string, string];
+  pos: [number, number];
 }
 
 export interface TransitAssistantContext {

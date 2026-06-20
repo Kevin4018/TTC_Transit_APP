@@ -87,6 +87,7 @@ export interface StopMeta {
   name: string;
   routes: number[];
   dirs: [string, string];
+  pos: [number, number];
 }
 
 interface StopRecord {
@@ -149,6 +150,11 @@ interface GtfsStopTime {
   departure_time: string;
   stop_id: string;
   stop_sequence: number;
+}
+
+interface GtfsStopDeparture {
+  headsign: string;
+  departure_minutes: string;
 }
 
 let gtfsDb: Database.Database | null | undefined;
@@ -317,6 +323,14 @@ const parseGtfsTimeToMinutes = (time: string) => {
   return Number(hours) * 60 + Number(minutes);
 };
 
+const hasTable = (db: Database.Database, tableName: string) => {
+  const row = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(tableName) as { name: string } | undefined;
+
+  return Boolean(row);
+};
+
 const cleanHeadsign = (headsign: string) =>
   headsign
     .replace(
@@ -345,6 +359,49 @@ const findGtfsPrediction = (
   const group = getGtfsStopGroup(db, stopId);
   const stopIds = group?.stops.map((stop) => stop.stop_id) ?? [stopId];
   const placeholders = stopIds.map(() => "?").join(", ");
+
+  if (hasTable(db, "stop_departures")) {
+    const selectRows = (matchDirection: boolean) =>
+      db
+        .prepare(`
+          SELECT headsign, departure_minutes
+          FROM stop_departures
+          WHERE stop_id IN (${placeholders})
+            AND route_name = ?
+            AND service_period = ?
+            AND (? = 0 OR ? = '' OR headsign = ?)
+        `)
+        .all(
+          ...stopIds,
+          String(routeId),
+          servicePeriodParam(),
+          matchDirection ? 1 : 0,
+          direction,
+          direction,
+        ) as GtfsStopDeparture[];
+
+    const rows = selectRows(true).length > 0 ? selectRows(true) : selectRows(false);
+    const predictions = rows.flatMap((row) =>
+      row.departure_minutes
+        .split(",")
+        .map((value) => Number(value))
+        .filter((minutes) => Number.isFinite(minutes))
+        .map((departureMinutes) => {
+          const normalizedDeparture =
+            departureMinutes < currentMinutes
+              ? departureMinutes + 24 * 60
+              : departureMinutes;
+
+          return {
+            etaMin: Math.max(0, normalizedDeparture - currentMinutes),
+            headsign: cleanHeadsign(row.headsign || direction || "Outbound"),
+          };
+        }),
+    );
+
+    return predictions.sort((a, b) => a.etaMin - b.etaMin)[0] ?? null;
+  }
+
   const selectRows = (matchDirection: boolean) =>
     db
     .prepare(`
@@ -543,6 +600,10 @@ export const getStopMeta = (stopId: string): StopMeta => {
       name: gtfsGroup.name,
       routes,
       dirs: getGtfsStopDirs(db, stopId, routes[0]),
+      pos: [
+        gtfsGroup.stops.reduce((sum, stop) => sum + stop.stop_lat, 0) / gtfsGroup.stops.length,
+        gtfsGroup.stops.reduce((sum, stop) => sum + stop.stop_lon, 0) / gtfsGroup.stops.length,
+      ],
     };
   }
 
@@ -555,6 +616,7 @@ export const getStopMeta = (stopId: string): StopMeta => {
     name: stop.name,
     routes: stop.routes,
     dirs: stop.dirs,
+    pos: stop.pos,
   };
 };
 
@@ -639,16 +701,23 @@ export const getNearbyStops = (_lat: number, _lng: number): NearbyStop[] =>
             MIN(CAST(stops.stop_id AS INTEGER)) AS stop_id,
             stops.stop_name,
             AVG(stops.stop_lat) AS stop_lat,
-            AVG(stops.stop_lon) AS stop_lon
+            AVG(stops.stop_lon) AS stop_lon,
+            ((AVG(stops.stop_lat) - ?) * (AVG(stops.stop_lat) - ?)) +
+              ((AVG(stops.stop_lon) - ?) * (AVG(stops.stop_lon) - ?)) AS distance_score
           FROM stops
           JOIN stop_routes ON stop_routes.stop_id = stops.stop_id
           WHERE stops.stop_lat BETWEEN ? AND ?
             AND stops.stop_lon BETWEEN ? AND ?
             AND stop_routes.service_period = ?
           GROUP BY stops.stop_name
-          LIMIT 300
+          ORDER BY distance_score ASC
+          LIMIT 800
         `)
           .all(
+            _lat,
+            _lat,
+            _lng,
+            _lng,
             _lat - searchRadius,
             _lat + searchRadius,
             _lng - searchRadius,
@@ -669,7 +738,7 @@ export const getNearbyStops = (_lat: number, _lng: number): NearbyStop[] =>
         }))
         .filter((stop) => Number.isFinite(stop.pos[0]) && Number.isFinite(stop.pos[1]))
         .sort((a, b) => a.distanceKm - b.distanceKm)
-        .slice(0, 60)
+        .slice(0, 160)
         .map(({ distanceKm: _distanceKm, ...stop }) => stop);
     })()
     : Object.entries(STOPS_DB).map(([stopId, stop]) => ({

@@ -7,6 +7,7 @@
     "build": "vite build",
     "dev": "vite",
     "import:gtfs": "tsx scripts/importGtfs.ts",
+    "import:gtfs:window": "tsx scripts/importGtfsWindow.ts",
     "setup:data": "tsx scripts/setupData.ts",
     "server": "tsx server/index.ts"
   },

@@ -14,17 +14,19 @@ interface LeafletMapProps {
   userPos: [number, number] | null;
   locationStatus?: LocationStatus;
   stops?: NearbyStop[];
+  selectedStopId?: string;
   onSelectStop?: (id: string) => void;
   onMoveEnd?: (center: [number, number]) => void;
   className?: string;
 }
 
 /** Pure-DOM Leaflet map — no react-leaflet context, works with any React version */
-function LeafletMap({ center, zoom, userPos, locationStatus, stops, onSelectStop, onMoveEnd, className }: LeafletMapProps) {
+function LeafletMap({ center, zoom, userPos, locationStatus, stops, selectedStopId, onSelectStop, onMoveEnd, className }: LeafletMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const userMarkerRef = useRef<L.Marker | null>(null);
   const stopMarkersRef = useRef<L.Marker[]>([]);
+  const skipNextMoveEndRef = useRef(false);
 
   // Boot the map once
   useEffect(() => {
@@ -41,6 +43,11 @@ function LeafletMap({ center, zoom, userPos, locationStatus, stops, onSelectStop
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
 
     map.on("moveend", () => {
+      if (skipNextMoveEndRef.current) {
+        skipNextMoveEndRef.current = false;
+        return;
+      }
+
       const nextCenter = map.getCenter();
       onMoveEnd?.([nextCenter.lat, nextCenter.lng]);
     });
@@ -67,7 +74,19 @@ function LeafletMap({ center, zoom, userPos, locationStatus, stops, onSelectStop
 
   // Recenter when center changes
   useEffect(() => {
-    mapRef.current?.setView(center, zoom);
+    const map = mapRef.current;
+    if (!map) return;
+
+    const currentCenter = map.getCenter();
+    const alreadyCentered =
+      Math.abs(currentCenter.lat - center[0]) < 0.00001 &&
+      Math.abs(currentCenter.lng - center[1]) < 0.00001 &&
+      map.getZoom() === zoom;
+
+    if (alreadyCentered) return;
+
+    skipNextMoveEndRef.current = true;
+    map.setView(center, zoom, { animate: false });
   }, [center[0], center[1], zoom]);             // eslint-disable-line react-hooks/exhaustive-deps
 
   // User location marker
@@ -96,15 +115,21 @@ function LeafletMap({ center, zoom, userPos, locationStatus, stops, onSelectStop
     stopMarkersRef.current = [];
 
     stops?.forEach(s => {
+      const selected = s.stopId === selectedStopId;
       const icon = L.divIcon({
         className: "",
-        html: `<div style="width:30px;height:30px;background:#fff;border:2px solid #1D1B20;border-radius:9px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.28)"><svg width="17" height="17" viewBox="0 0 16 19" aria-hidden="true"><path d="${P.bus}" fill="#1D1B20"/></svg></div>`,
-        iconSize: [30, 30],
-        iconAnchor: [15, 15],
+        html: `<div style="width:${selected ? 36 : 30}px;height:${selected ? 36 : 30}px;background:${selected ? "#FFD84D" : "#fff"};border:${selected ? 3 : 2}px solid #1D1B20;border-radius:9px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.28);transform:${selected ? "translate(-3px,-3px)" : "none"}"><svg width="17" height="17" viewBox="0 0 16 19" aria-hidden="true"><path d="${P.bus}" fill="#1D1B20"/></svg></div>`,
+        iconSize: selected ? [36, 36] : [30, 30],
+        iconAnchor: selected ? [18, 18] : [15, 15],
       });
       const marker = L.marker(s.pos, { icon }).addTo(map);
       marker.bindTooltip(s.name, { permanent: false, direction: "top", offset: [0, -18] });
-      if (onSelectStop) marker.on("click", () => onSelectStop(s.stopId));
+      if (onSelectStop) {
+        marker.on("click", event => {
+          L.DomEvent.stopPropagation(event);
+          onSelectStop(s.stopId);
+        });
+      }
       stopMarkersRef.current.push(marker);
     });
 
@@ -112,7 +137,7 @@ function LeafletMap({ center, zoom, userPos, locationStatus, stops, onSelectStop
       stopMarkersRef.current.forEach(marker => marker.remove());
       stopMarkersRef.current = [];
     };
-  }, [stops, onSelectStop]);
+  }, [stops, selectedStopId, onSelectStop]);
 
   const locationLabel =
     locationStatus === "locating" ? "Locating..."
@@ -421,8 +446,9 @@ interface MapScreenProps {
   onBack: () => void;
   onSwitchToDest: () => void;
   onSelectStop: (id: string) => void;
+  onMapMove: (center: [number, number]) => void;
 }
-function MapScreen({ stopId, showControls, mapCenter, userPos, locationStatus, onSearch, onOpenReport, onBack, onSwitchToDest, onSelectStop }: MapScreenProps) {
+function MapScreen({ stopId, showControls, mapCenter, userPos, locationStatus, onSearch, onOpenReport, onBack, onSwitchToDest, onSelectStop, onMapMove }: MapScreenProps) {
   const [prediction, setPrediction] = useState<Prediction | null>(null);
   const [loadingPrediction, setLoadingPrediction] = useState(true);
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
@@ -543,8 +569,10 @@ function MapScreen({ stopId, showControls, mapCenter, userPos, locationStatus, o
             userPos={userPos}
             locationStatus={locationStatus}
             stops={nearbyStops}
+            selectedStopId={stopId}
             onSelectStop={onSelectStop}
             onMoveEnd={center => {
+              onMapMove(center);
               getNearbyStops(center[0], center[1]).then(setNearbyStops);
             }}
           />
@@ -1194,8 +1222,10 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
   const [userPos, setUserPos] = useState<[number, number] | null>(null);
+  const [mapCenter, setMapCenter] = useState<[number, number]>(TORONTO);
   const [locationStatus, setLocationStatus] = useState<LocationStatus>("locating");
   const [homeStopId, setHomeStopId] = useState("college-yonge");
+  const initializedLocationRef = useRef(false);
   const canvasScale = useCanvasScale();
 
   useEffect(() => {
@@ -1206,7 +1236,12 @@ export default function App() {
 
     const watchId = navigator.geolocation.watchPosition(
       pos => {
-        setUserPos([pos.coords.latitude, pos.coords.longitude]);
+        const nextPos: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        setUserPos(nextPos);
+        if (!initializedLocationRef.current) {
+          initializedLocationRef.current = true;
+          setMapCenter(nextPos);
+        }
         setLocationStatus("ready");
       },
       error => {
@@ -1225,8 +1260,6 @@ export default function App() {
 
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
-
-  const mapCenter: [number, number] = userPos ?? TORONTO;
 
   useEffect(() => {
     if (screen.id !== "loading") return;
@@ -1254,6 +1287,9 @@ export default function App() {
     setSearching(false);
     setQuery("");
     setScreen({ id: "map", stopId, fromSearch: true });
+    getStopMeta(stopId)
+      .then(meta => setMapCenter(meta.pos))
+      .catch(() => null);
   };
 
   const handleSelectDest = (destId: string) => {
@@ -1315,7 +1351,7 @@ export default function App() {
         className="w-[390px] min-h-[844px] bg-white relative overflow-x-hidden origin-top"
         style={{
           transform: `scale(${canvasScale})`,
-          transformOrigin: "top center",
+          transformOrigin: "top left",
         }}
       >
         {searching ? (
@@ -1341,11 +1377,12 @@ export default function App() {
             userPos={userPos}
             locationStatus={locationStatus}
             onSearch={() => setSearching(true)}
-            onOpenReport={handleOpenReport}
-            onBack={() => setScreen({ id: "map", stopId: homeStopId, fromSearch: false })}
-            onSwitchToDest={handleSwitchToDestSearch}
-            onSelectStop={stopId => setScreen({ id: "map", stopId, fromSearch: true })}
-          />
+              onOpenReport={handleOpenReport}
+              onBack={() => setScreen({ id: "map", stopId: homeStopId, fromSearch: false })}
+              onSwitchToDest={handleSwitchToDestSearch}
+              onSelectStop={handleSelectStop}
+              onMapMove={setMapCenter}
+            />
         ) : screen.id === "busReport" ? (
           <BusReport
             route={screen.route}
