@@ -51,21 +51,8 @@ function LeafletMap({ center, zoom, userPos, locationStatus, stops, routeLine, d
       zoomAnimation: false,
       fadeAnimation: false,
       markerZoomAnimation: false,
-      scrollWheelZoom: false,
-      wheelDebounceTime: 20,
-      wheelPxPerZoomLevel: 80,
     });
     mapRef.current = map;
-
-    const stopWheelPropagation = (event: WheelEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const zoomDelta = event.deltaY > 0 ? -1 : 1;
-      const nextZoom = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), map.getZoom() + zoomDelta));
-      if (nextZoom === map.getZoom()) return;
-      map.setZoomAround(map.mouseEventToContainerPoint(event), nextZoom, { animate: false });
-    };
-    containerRef.current.addEventListener("wheel", stopWheelPropagation, { passive: false });
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
 
@@ -119,7 +106,6 @@ function LeafletMap({ center, zoom, userPos, locationStatus, stops, routeLine, d
     }
 
     return () => {
-      containerRef.current?.removeEventListener("wheel", stopWheelPropagation);
       map.remove();
       mapRef.current = null;
     };
@@ -1801,10 +1787,9 @@ export default function App() {
         }}
       >
       <div
-        className="w-[390px] min-h-[844px] bg-white relative overflow-x-hidden origin-top"
+        className="w-[390px] min-h-[844px] bg-white relative overflow-x-hidden"
         style={{
-          transform: `scale(${canvasScale})`,
-          transformOrigin: "top left",
+          zoom: canvasScale,
         }}
       >
         {searching ? (
