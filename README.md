@@ -8,6 +8,19 @@ This project is a TTC transit prototype with:
 - OpenTripPlanner 2.8 for real walking, driving, biking, and TTC routing
 - live place search through a geocoder for arbitrary destinations
 
+## Current Features
+
+- **TTC map and stop exploration**: shows nearby TTC stops on an interactive map, highlights the selected stop, and supports switching route directions.
+- **Arrival prediction and delay explanation**: estimates TTC arrivals from GTFS data and explains schedule, weather, traffic, accidents, construction, events, holidays, and other delay offsets.
+- **Destination search and recommendations**: supports AI-style search for TTC stops, addresses, landmarks, tourist attractions, restaurants, parks, and shopping destinations. The search page also shows location-aware recommendations and recent search history.
+- **Trip planning and navigation**: supports destination routing by transit, walking, driving, and biking through OpenTripPlanner when available, with route steps, ETA, destination pins, and map centering for selected destinations.
+- **Account and memory support**: users can sign up, log in, log out, and keep recent search history locally for faster repeated searches.
+- **Milk bot transit assistant**: answers TTC questions about arrivals, stops, route delays, nearby options, traffic, weather, construction, events, holidays, crowding, route terminals, and navigation.
+- **Trip-planning chatbot support**: understands natural language trip requests such as planning a trip tomorrow to a destination, keeps destination context for follow-up questions, and uses Gemini for intent classification and answer verification when configured.
+- **Toronto guide chatbot support**: answers broad Toronto itinerary and recommendation questions, including attractions, food, restaurants, parks, shopping, rainy-day plans, family-friendly ideas, budget plans, and follow-up adjustments.
+- **Multilingual chatbot responses**: replies in the user's language for English, Chinese, and French questions, and formats longer answers with readable line breaks and numbered lists.
+- **Events and holidays awareness**: considers Toronto sports games, concerts, large entertainment events, Ontario/Canadian public holidays, and holiday greetings when answering questions or explaining prediction factors.
+
 ## Prerequisites
 
 - Node.js 20+
