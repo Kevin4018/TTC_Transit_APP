@@ -71,11 +71,16 @@ GTFS_DB_PATH=./data/gtfs.sqlite
 OTP_BASE_URL=http://localhost:8080
 OTP_PLAN_DATETIME=match-weekday
 OTP_GTFS_SERVICE_START_DATE=2026-06-21
+TICKETMASTER_API_KEY=optional_ticketmaster_discovery_api_key
 ```
 
 `GEMINI_API_KEY` is used only by the Express API server for chatbot intent classification. Do not put this key in a `VITE_` variable, because Vite exposes those values to the browser bundle.
 
 `OTP_PLAN_DATETIME=match-weekday` maps the current clock time to the same weekday inside the GTFS feed calendar. This avoids failed transit searches when today's real date is outside the downloaded TTC feed's service dates.
+
+`TICKETMASTER_API_KEY` enables live Toronto sports, concert, festival, and entertainment event lookups through the Ticketmaster Discovery API. If it is not set, the app falls back to local major-venue pressure estimates for Toronto.
+
+Holiday awareness uses the public Nager.Date holiday API for Canadian/Ontario public holidays. If that request fails, the app falls back to a small local set of fixed-date Ontario holidays.
 
 Restart `npm run server` after changing `.env`.
 

@@ -1,5 +1,7 @@
 import { apiRequest } from "./request";
 import { getTrafficImpact } from "./traffic";
+import { getEventImpact, type EventImpact } from "./events";
+import { getHolidayImpact, type HolidayImpact } from "./holidays";
 import {
   getCurrentWeather,
   getWeatherForecast,
@@ -55,6 +57,8 @@ export interface Prediction {
     passengerLoad?: number;
     accidents: number;
     construction: number;
+    events?: number;
+    holidays?: number;
     other: number;
   };
   summary?: string;
@@ -78,6 +82,8 @@ export interface BusReport {
     passengerLoad?: { value: number; description: string };
     accidents: { value: number; description: string };
     construction: { value: number; description: string };
+    events?: { value: number; description: string };
+    holidays?: { value: number; description: string };
     other?: { value: number; description: string };
   };
 }
@@ -156,6 +162,8 @@ export type TransitAssistantIntent =
   | "delay"
   | "weather"
   | "traffic"
+  | "events"
+  | "holidays"
   | "crowding"
   | "navigation"
   | "help"
@@ -477,6 +485,18 @@ function isTrafficQuestion(input: string): boolean {
   return /\b(?:traffic|road|roads|congestion|jam|busy roads|rush hour)\b/i.test(input);
 }
 
+function isEventQuestion(input: string): boolean {
+  return /\b(?:event|events|game|games|match|concert|show|festival|arena|stadium|rogers\s+centre|scotiabank\s+arena|bmo\s+field|budweiser\s+stage|entertainment|venue|crowds?)\b/i.test(input);
+}
+
+function isHolidayQuestion(input: string): boolean {
+  return /\b(?:holiday|holidays|public holiday|stat holiday|statutory holiday|long weekend|canada day|christmas|boxing day|new year|thanksgiving|family day|victoria day|labou?r day)\b/i.test(input);
+}
+
+function isGreeting(input: string): boolean {
+  return /^(?:hi|hello|hey|good morning|good afternoon|good evening|happy holidays|greetings)\b[!. ]*$/i.test(input.trim());
+}
+
 function isDelayQuestion(input: string): boolean {
   return /\b(?:delay|late|slow|behind|accident|construction|why)\b/i.test(input);
 }
@@ -560,6 +580,51 @@ function parseAssistantTargetTime(input: string, baseTime = new Date()): Date | 
     target.setHours(hour, minute, 0, 0);
     if (target.getTime() <= baseTime.getTime()) target.setDate(target.getDate() + 1);
     return target;
+  }
+
+  return undefined;
+}
+
+function getObservedHolidayDate(year: number, monthIndex: number, matcher: (date: Date) => boolean): Date {
+  const date = new Date(year, monthIndex, 1, 12, 0, 0, 0);
+  while (!matcher(date)) {
+    date.setDate(date.getDate() + 1);
+  }
+  return date;
+}
+
+function parseNamedHolidayTargetDate(input: string, baseTime = new Date()): Date | undefined {
+  const text = input.toLowerCase();
+  const year = baseTime.getFullYear();
+  const fixedDate = (monthIndex: number, day: number) => new Date(year, monthIndex, day, 12, 0, 0, 0);
+
+  if (/\bcanada day\b/.test(text)) return fixedDate(6, 1);
+  if (/\bchristmas\b/.test(text)) return fixedDate(11, 25);
+  if (/\bboxing day\b/.test(text)) return fixedDate(11, 26);
+  if (/\bnew year'?s?(?: day)?\b/.test(text)) return fixedDate(0, 1);
+  if (/\bfamily day\b/.test(text)) {
+    let mondayCount = 0;
+    return getObservedHolidayDate(year, 1, date => {
+      if (date.getDay() !== 1) return false;
+      mondayCount += 1;
+      return mondayCount === 3;
+    });
+  }
+  if (/\bvictoria day\b/.test(text)) {
+    const date = new Date(year, 4, 24, 12, 0, 0, 0);
+    while (date.getDay() !== 1) date.setDate(date.getDate() - 1);
+    return date;
+  }
+  if (/\blabou?r day\b/.test(text)) {
+    return getObservedHolidayDate(year, 8, date => date.getDay() === 1);
+  }
+  if (/\bthanksgiving\b/.test(text)) {
+    let mondayCount = 0;
+    return getObservedHolidayDate(year, 9, date => {
+      if (date.getDay() !== 1) return false;
+      mondayCount += 1;
+      return mondayCount === 2;
+    });
   }
 
   return undefined;
@@ -806,6 +871,41 @@ function describeTrafficLevel(delayMin: number): string {
   return "light";
 }
 
+function describeEventImpact(impact: EventImpact, targetTime?: Date): string {
+  const when = targetTime ? `around ${formatTransitTime(targetTime)}` : "right now";
+  const source = impact.source === "ticketmaster" ? "Ticketmaster" : "major Toronto venue estimates";
+
+  if (impact.events.length === 0) {
+    return `I do not see nearby sports games, concerts, festivals, or large entertainment events affecting TTC arrivals ${when}. Source: ${source}.`;
+  }
+
+  const eventText = impact.events
+    .slice(0, 3)
+    .map(event => `${event.title} at ${event.venueName} (${event.distanceKm.toFixed(1)} km away, about +${event.delayMin} min)`)
+    .join("; ");
+  const delayText = impact.eventDelayMin > 0
+    ? `Large-event crowds may add about ${impact.eventDelayMin} min near the route.`
+    : "Those events should not add TTC delay.";
+
+  return `${when}, ${delayText} Source: ${source}. Events: ${eventText}.`;
+}
+
+function describeHolidayImpact(impact: HolidayImpact, targetTime?: Date): string {
+  const when = targetTime ? `around ${formatTransitTime(targetTime)}` : "today";
+  const source = impact.source === "nager" ? "Nager.Date" : "local fallback";
+  const holiday = impact.holidays[0];
+
+  if (!holiday) {
+    return `I do not see an Ontario public holiday for ${when}. Source: ${source}.`;
+  }
+
+  const delayText = impact.holidayDelayMin > 0
+    ? `It may add about ${impact.holidayDelayMin} min because TTC schedules and travel patterns can shift on holidays.`
+    : "I do not expect extra TTC delay from it right now.";
+
+  return `${holiday.name} is observed ${when}. ${delayText} Source: ${source}.`;
+}
+
 function formatLegMode(mode: NavigationLeg["mode"]): string {
   if (mode === "BUS") return "bus";
   if (mode === "STREETCAR") return "streetcar";
@@ -941,6 +1041,77 @@ async function answerTrafficQuestion(input: string, context: TransitAssistantCon
       context: { ...context, lastIntent: "traffic" },
       text: "I cannot estimate traffic right now. Try again in a moment.",
     };
+  }
+}
+
+async function answerEventQuestion(input: string, context: TransitAssistantContext): Promise<TransitAssistantAnswer> {
+  const targetTime = parseAssistantTargetTime(input, getTimeBase(input, context));
+  const routeId = findRouteInText(input) ?? context.routeId ?? 501;
+
+  try {
+    const impact = await getEventImpact(43.6532, -79.3832, routeId, targetTime?.toISOString());
+
+    return {
+      matchedIntent: "events",
+      confidence: impact.source === "ticketmaster" ? 84 : 72,
+      context: {
+        ...context,
+        routeId,
+        lastTargetTimeIso: targetTime?.toISOString() ?? new Date().toISOString(),
+        lastIntent: "events",
+      },
+      text: describeEventImpact(impact, targetTime),
+    };
+  } catch {
+    return {
+      matchedIntent: "events",
+      confidence: 55,
+      context: { ...context, lastIntent: "events" },
+      text: "I cannot check Toronto event pressure right now. Try again in a moment.",
+    };
+  }
+}
+
+async function answerHolidayQuestion(input: string, context: TransitAssistantContext): Promise<TransitAssistantAnswer> {
+  const timeBase = getTimeBase(input, context);
+  const targetTime = parseNamedHolidayTargetDate(input, timeBase) ?? parseAssistantTargetTime(input, timeBase);
+
+  try {
+    const impact = await getHolidayImpact(targetTime?.toISOString());
+
+    return {
+      matchedIntent: "holidays",
+      confidence: impact.source === "nager" ? 86 : 70,
+      context: {
+        ...context,
+        lastTargetTimeIso: targetTime?.toISOString() ?? new Date().toISOString(),
+        lastIntent: "holidays",
+      },
+      text: describeHolidayImpact(impact, targetTime),
+    };
+  } catch {
+    return {
+      matchedIntent: "holidays",
+      confidence: 55,
+      context: { ...context, lastIntent: "holidays" },
+      text: "I cannot check holiday schedules right now. Try again in a moment.",
+    };
+  }
+}
+
+async function answerHolidayGreeting(context: TransitAssistantContext): Promise<TransitAssistantAnswer | null> {
+  try {
+    const impact = await getHolidayImpact();
+    if (!impact.isHoliday || !impact.greeting) return null;
+
+    return {
+      matchedIntent: "holidays",
+      confidence: impact.source === "nager" ? 88 : 72,
+      context: { ...context, lastIntent: "holidays" },
+      text: `${impact.greeting}! ${impact.description} Ask me about a route, stop, ETA, delay, traffic, weather, events, holidays, or destination.`,
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -1247,6 +1418,8 @@ function describePrediction(prediction: Prediction) {
     prediction.offsets.schedule ? `schedule ${prediction.offsets.schedule > 0 ? "adds" : "saves"} ${Math.abs(prediction.offsets.schedule)} min` : "",
     prediction.offsets.weather ? `weather adds ${prediction.offsets.weather} min` : "",
     prediction.offsets.traffic ? `traffic adds ${prediction.offsets.traffic} min` : "",
+    prediction.offsets.events ? `events add ${prediction.offsets.events} min` : "",
+    prediction.offsets.holidays ? `holidays add ${prediction.offsets.holidays} min` : "",
   ].filter(Boolean).join("; ");
 
   return {
@@ -1346,8 +1519,13 @@ export async function askTransitAssistant(
     return {
       matchedIntent: "help",
       confidence: 90,
-      text: 'Ask me about a TTC route, stop, ETA, delay, traffic, weather, or destination. For example: "When is the 501 coming at College?"',
+      text: 'Ask me about a TTC route, stop, ETA, delay, traffic, weather, events, holidays, or destination. For example: "When is the 501 coming at College?"',
     };
+  }
+
+  if (isGreeting(q)) {
+    const holidayGreeting = await answerHolidayGreeting(context);
+    if (holidayGreeting) return holidayGreeting;
   }
 
   const unknownRouteAnswer = await answerUnknownRouteClarification(q, context);
@@ -1366,8 +1544,10 @@ export async function askTransitAssistant(
   const classifiedIntent = await classifyTransitAssistantIntent(q, context);
   const llmIntent = classifiedIntent?.intent;
   const followUp = isGenericFollowUp(q) && hasAssistantContext(context);
-  const wantsWeather = llmIntent ? llmIntent === "weather" : isWeatherQuestion(q) || (context.lastIntent === "weather" && (isTimeFollowUp(q) || followUp));
-  const wantsTraffic = llmIntent ? llmIntent === "traffic" : isTrafficQuestion(q) || (context.lastIntent === "traffic" && (isTimeFollowUp(q) || followUp));
+  const wantsEvents = isEventQuestion(q) || llmIntent === "events" || (context.lastIntent === "events" && (isTimeFollowUp(q) || followUp));
+  const wantsHolidays = isHolidayQuestion(q) || llmIntent === "holidays" || (context.lastIntent === "holidays" && (isTimeFollowUp(q) || followUp));
+  const wantsWeather = !wantsEvents && !wantsHolidays && (llmIntent ? llmIntent === "weather" : isWeatherQuestion(q) || (context.lastIntent === "weather" && (isTimeFollowUp(q) || followUp)));
+  const wantsTraffic = !wantsEvents && !wantsHolidays && (llmIntent ? llmIntent === "traffic" : isTrafficQuestion(q) || (context.lastIntent === "traffic" && (isTimeFollowUp(q) || followUp)));
   const wantsDelay = llmIntent ? llmIntent === "delay" : isDelayQuestion(q) || (context.lastIntent === "delay" && followUp);
   const wantsCrowding = llmIntent ? llmIntent === "crowding" : isCrowdingQuestion(q) || (context.lastIntent === "crowding" && followUp);
   const wantsEta = llmIntent ? llmIntent === "eta" : isEtaQuestion(q) || (hasRouteContext(context) && (context.lastIntent === "eta" || followUp));
@@ -1383,6 +1563,14 @@ export async function askTransitAssistant(
     return answerTrafficQuestion(q, context);
   }
 
+  if (wantsEvents && !wantsCrowding) {
+    return answerEventQuestion(q, context);
+  }
+
+  if (wantsHolidays && !wantsCrowding) {
+    return answerHolidayQuestion(q, context);
+  }
+
   if (!llmIntent || llmIntent === "navigation") {
     const destinationAnswer = await answerDestinationQuestion(q, context);
     if (destinationAnswer) return destinationAnswer;
@@ -1393,13 +1581,13 @@ export async function askTransitAssistant(
 
   const isTransitQuestion = llmIntent
     ? llmIntent !== "out-of-scope"
-    : /bus|ttc|route|stop|station|eta|arriv|delay|late|weather|traffic|crowd|busy|navigate|direction|trip|destination|terminal|terminus|last stop|final stop|walk|go to|get to|take me|east|west|north|south|\b\d{3}\b/i.test(q) || followUp;
+    : /bus|ttc|route|stop|station|eta|arriv|delay|late|weather|traffic|event|game|concert|show|festival|holiday|long weekend|crowd|busy|navigate|direction|trip|destination|terminal|terminus|last stop|final stop|walk|go to|get to|take me|east|west|north|south|\b\d{3}\b/i.test(q) || followUp;
   if (!isTransitQuestion) {
     return {
       matchedIntent: "out-of-scope",
       confidence: 82,
       context,
-      text: "This question seems irrelevant. Try ask about TTC trip questions, like arrival times, nearby stops, route delays, traffic, weather, and navigation.",
+      text: "I can help with TTC trip questions like arrival times, nearby stops, route delays, traffic, weather, events, holidays, and navigation.",
     };
   }
 
@@ -1472,11 +1660,22 @@ export async function askTransitAssistant(
     }
 
     if (wantsDelay) {
+      const [eventImpact, holidayImpact] = await Promise.all([
+        getEventImpact(43.6532, -79.3832, prediction.routeId).catch(() => null),
+        getHolidayImpact().catch(() => null),
+      ]);
+      const eventText = eventImpact && eventImpact.eventDelayMin > 0
+        ? `; events add ${eventImpact.eventDelayMin} min (${eventImpact.events[0]?.title ?? "large Toronto event activity"})`
+        : "";
+      const holidayText = holidayImpact && holidayImpact.holidayDelayMin > 0
+        ? `; holidays add ${holidayImpact.holidayDelayMin} min (${holidayImpact.holidays[0]?.name ?? "Ontario public holiday"})`
+        : "";
+      const extraDelay = (eventImpact?.eventDelayMin ?? 0) + (holidayImpact?.holidayDelayMin ?? 0);
       return {
         matchedIntent: "delay",
         confidence,
         context: { ...nextContext, lastIntent: "delay" },
-        text: `Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}. Main factors: ${summary}. Confidence: ${confidence}%.`,
+        text: `Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin + extraDelay} min at ${stopName}. Main factors: ${summary}${eventText}${holidayText}. Confidence: ${confidence}%.`,
       };
     }
 
