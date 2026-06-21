@@ -72,6 +72,7 @@ router.get("/debug/otp", async (_req, res) => {
         destination: { label: "CN Tower", location: { coordinate: { latitude: 43.6426, longitude: -79.3871 } } }
         dateTime: { earliestDeparture: $planDateTime }
         modes: { transit: { access: [WALK], egress: [WALK], transfer: [WALK] } transitOnly: true }
+        searchWindow: 7200
         first: 1
       ) {
         routingErrors { code description }
