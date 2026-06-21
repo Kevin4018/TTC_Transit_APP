@@ -195,6 +195,52 @@ interface TransitAssistantAnswerVerificationResult {
   reason?: string;
 }
 
+type ResponseLanguage = "en" | "zh" | "fr";
+
+function detectResponseLanguage(input: string): ResponseLanguage {
+  if (/[\u4e00-\u9fff]/.test(input)) return "zh";
+  if (/[àâçéèêëîïôùûüÿœ]/i.test(input) || /\b(?:bonjour|salut|recommande-moi|recommandez-moi|où|quoi|comment|manger|visiter|trajet|météo|retard|arrivée|heure|merci|s'il vous plaît|avec\s+des|une\s+idée|un\s+itinéraire)\b/i.test(input)) return "fr";
+  return "en";
+}
+
+function localizeGuideAnswer(answer: TransitAssistantAnswer, language: ResponseLanguage): TransitAssistantAnswer {
+  if (answer.matchedIntent !== "guide" || language === "en") return answer;
+  const lines = answer.text.split("\n");
+  const localized = lines.map(line => {
+    if (/^Here is a/.test(line)) return language === "zh" ? "这是一个多伦多攻略建议：" : "Voici une idée d'itinéraire à Toronto :";
+    if (/^\s+\d+\./.test(line) || /^\d+\./.test(line)) return line;
+    if (/^\s{3}/.test(line)) return language === "zh" ? `   ${line.trim()}` : `   ${line.trim()}`;
+    if (/^Budget fit:/.test(line)) return language === "zh" ? line.replace("Budget fit:", "预算：") : line.replace("Budget fit:", "Budget :");
+    if (/^Before going:/.test(line)) return language === "zh"
+      ? "出发前：请确认实时营业时间、门票和预约。"
+      : "Avant de partir : vérifiez les horaires, les billets et les réservations.";
+    if (/^Next step:/.test(line)) return language === "zh"
+      ? line.replace("Next step: ask", "下一步：可以问").replace("when you choose a stop.", "然后选择站点。")
+      : line.replace("Next step: ask", "Étape suivante : demandez").replace("when you choose a stop.", "quand vous choisissez un arrêt.");
+    return line;
+  }).join("\n");
+
+  return { ...answer, text: localized };
+}
+
+function formatAssistantText(text: string): string {
+  return text
+    .replace(/([.!?])\s+(?=\d+\.\s)/g, "$1\n\n")
+    .replace(/\s+(\d+\.\s)/g, "\n$1")
+    .replace(/\s+(Before going:|Next step:|Budget fit:|出发前：|下一步：|预算：|Avant de partir :|Étape suivante :|Budget :)/g, "\n\n$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function applyResponsePresentation(input: string, answer: TransitAssistantAnswer): TransitAssistantAnswer {
+  const language = detectResponseLanguage(input);
+  const localized = localizeGuideAnswer(answer, language);
+  return {
+    ...localized,
+    text: formatAssistantText(localized.text),
+  };
+}
+
 const ROUTE_TERMINALS: Record<number, { label: string; terminals: string[]; notes?: string }> = {
   501: {
     label: "501 Queen",
@@ -223,25 +269,27 @@ type GuidePlace = {
   address: string;
   bestFor: string[];
   note: string;
+  noteZh: string;
+  noteFr: string;
   indoor?: boolean;
   budget?: "free" | "low" | "medium" | "higher";
   destinationQuery: string;
 };
 
 const GUIDE_PLACES: GuidePlace[] = [
-  { name: "CN Tower", category: "attractions", area: "downtown", address: "290 Bremner Blvd", bestFor: ["first time", "views", "photos"], note: "best paired with the waterfront or Ripley's Aquarium", indoor: true, budget: "higher", destinationQuery: "CN Tower" },
-  { name: "Ripley's Aquarium of Canada", category: "attractions", area: "downtown", address: "288 Bremner Blvd", bestFor: ["kids", "rain", "first time"], note: "strong indoor stop near CN Tower", indoor: true, budget: "higher", destinationQuery: "Ripley's Aquarium of Canada" },
-  { name: "St. Lawrence Market", category: "food", area: "east downtown", address: "93 Front St E", bestFor: ["food", "casual", "local"], note: "good for lunch and quick tasting stops", indoor: true, budget: "medium", destinationQuery: "St. Lawrence Market" },
-  { name: "Kensington Market", category: "food", area: "west downtown", address: "Kensington Ave", bestFor: ["food", "walking", "budget"], note: "good for casual food, vintage shops, and street wandering", budget: "low", destinationQuery: "Kensington Market" },
-  { name: "Chinatown", category: "food", area: "west downtown", address: "Spadina Ave", bestFor: ["food", "budget", "late"], note: "pairs naturally with Kensington Market and AGO", budget: "low", destinationQuery: "Chinatown Toronto" },
-  { name: "Art Gallery of Ontario", category: "culture", area: "west downtown", address: "317 Dundas St W", bestFor: ["art", "rain", "culture"], note: "good indoor culture stop near Chinatown", indoor: true, budget: "medium", destinationQuery: "Art Gallery of Ontario" },
-  { name: "Royal Ontario Museum", category: "culture", area: "midtown", address: "100 Queens Park", bestFor: ["kids", "rain", "museum"], note: "large museum option near Bloor-Yonge and University of Toronto", indoor: true, budget: "medium", destinationQuery: "Royal Ontario Museum" },
-  { name: "Toronto Islands Ferry", category: "parks", area: "waterfront", address: "Jack Layton Ferry Terminal", bestFor: ["views", "walking", "summer"], note: "best in good weather; allow extra time for ferry lines", budget: "low", destinationQuery: "Toronto Islands Ferry" },
-  { name: "High Park", category: "parks", area: "west end", address: "1873 Bloor St W", bestFor: ["nature", "walking", "free"], note: "large park with easy subway access", budget: "free", destinationQuery: "High Park" },
-  { name: "Trinity Bellwoods Park", category: "parks", area: "west downtown", address: "790 Queen St W", bestFor: ["local", "walking", "free"], note: "pairs well with Queen West shops and food", budget: "free", destinationQuery: "Trinity Bellwoods Park" },
-  { name: "CF Toronto Eaton Centre", category: "shopping", area: "downtown", address: "220 Yonge St", bestFor: ["shopping", "rain", "central"], note: "central indoor shopping near Dundas and Queen", indoor: true, budget: "medium", destinationQuery: "CF Toronto Eaton Centre" },
-  { name: "Yorkville Village", category: "shopping", area: "midtown", address: "55 Avenue Rd", bestFor: ["shopping", "upscale", "cafes"], note: "good for a quieter upscale stop near ROM", indoor: true, budget: "higher", destinationQuery: "Yorkville Village" },
-  { name: "Queen West", category: "night", area: "west downtown", address: "Queen St W", bestFor: ["night", "food", "shopping"], note: "good evening area for restaurants, bars, and local shops", budget: "medium", destinationQuery: "Queen West Toronto" },
+  { name: "CN Tower", category: "attractions", area: "downtown", address: "290 Bremner Blvd", bestFor: ["first time", "views", "photos"], note: "best paired with the waterfront or Ripley's Aquarium", noteZh: "适合和湖边或 Ripley's Aquarium 一起安排", noteFr: "à combiner avec le waterfront ou Ripley's Aquarium", indoor: true, budget: "higher", destinationQuery: "CN Tower" },
+  { name: "Ripley's Aquarium of Canada", category: "attractions", area: "downtown", address: "288 Bremner Blvd", bestFor: ["kids", "rain", "first time"], note: "strong indoor stop near CN Tower", noteZh: "CN Tower 旁边的强室内选择", noteFr: "bonne option intérieure près de la CN Tower", indoor: true, budget: "higher", destinationQuery: "Ripley's Aquarium of Canada" },
+  { name: "St. Lawrence Market", category: "food", area: "east downtown", address: "93 Front St E", bestFor: ["food", "casual", "local"], note: "good for lunch and quick tasting stops", noteZh: "适合午餐和快速试吃", noteFr: "bon choix pour le déjeuner et des dégustations rapides", indoor: true, budget: "medium", destinationQuery: "St. Lawrence Market" },
+  { name: "Kensington Market", category: "food", area: "west downtown", address: "Kensington Ave", bestFor: ["food", "walking", "budget"], note: "good for casual food, vintage shops, and street wandering", noteZh: "适合小吃、复古店和街区散步", noteFr: "idéal pour manger simplement, voir des boutiques vintage et se promener", budget: "low", destinationQuery: "Kensington Market" },
+  { name: "Chinatown", category: "food", area: "west downtown", address: "Spadina Ave", bestFor: ["food", "budget", "late"], note: "pairs naturally with Kensington Market and AGO", noteZh: "很适合和 Kensington Market、AGO 连在一起", noteFr: "se combine bien avec Kensington Market et l'AGO", budget: "low", destinationQuery: "Chinatown Toronto" },
+  { name: "Art Gallery of Ontario", category: "culture", area: "west downtown", address: "317 Dundas St W", bestFor: ["art", "rain", "culture"], note: "good indoor culture stop near Chinatown", noteZh: "Chinatown 附近的室内文化景点", noteFr: "bonne halte culturelle intérieure près de Chinatown", indoor: true, budget: "medium", destinationQuery: "Art Gallery of Ontario" },
+  { name: "Royal Ontario Museum", category: "culture", area: "midtown", address: "100 Queens Park", bestFor: ["kids", "rain", "museum"], note: "large museum option near Bloor-Yonge and University of Toronto", noteZh: "Bloor-Yonge 和多大附近的大型博物馆", noteFr: "grand musée près de Bloor-Yonge et de l'Université de Toronto", indoor: true, budget: "medium", destinationQuery: "Royal Ontario Museum" },
+  { name: "Toronto Islands Ferry", category: "parks", area: "waterfront", address: "Jack Layton Ferry Terminal", bestFor: ["views", "walking", "summer"], note: "best in good weather; allow extra time for ferry lines", noteZh: "天气好时最适合，排 ferry 要预留时间", noteFr: "meilleur par beau temps; prévoyez du temps pour la file du ferry", budget: "low", destinationQuery: "Toronto Islands Ferry" },
+  { name: "High Park", category: "parks", area: "west end", address: "1873 Bloor St W", bestFor: ["nature", "walking", "free"], note: "large park with easy subway access", noteZh: "大型公园，坐地铁很方便", noteFr: "grand parc facile d'accès en métro", budget: "free", destinationQuery: "High Park" },
+  { name: "Trinity Bellwoods Park", category: "parks", area: "west downtown", address: "790 Queen St W", bestFor: ["local", "walking", "free"], note: "pairs well with Queen West shops and food", noteZh: "适合和 Queen West 的店铺、美食一起安排", noteFr: "se combine bien avec les boutiques et restaurants de Queen West", budget: "free", destinationQuery: "Trinity Bellwoods Park" },
+  { name: "CF Toronto Eaton Centre", category: "shopping", area: "downtown", address: "220 Yonge St", bestFor: ["shopping", "rain", "central"], note: "central indoor shopping near Dundas and Queen", noteZh: "Dundas 和 Queen 附近的市中心室内购物点", noteFr: "centre commercial intérieur près de Dundas et Queen", indoor: true, budget: "medium", destinationQuery: "CF Toronto Eaton Centre" },
+  { name: "Yorkville Village", category: "shopping", area: "midtown", address: "55 Avenue Rd", bestFor: ["shopping", "upscale", "cafes"], note: "good for a quieter upscale stop near ROM", noteZh: "ROM 附近较安静、偏高端的区域", noteFr: "option plus calme et haut de gamme près du ROM", indoor: true, budget: "higher", destinationQuery: "Yorkville Village" },
+  { name: "Queen West", category: "night", area: "west downtown", address: "Queen St W", bestFor: ["night", "food", "shopping"], note: "good evening area for restaurants, bars, and local shops", noteZh: "晚上适合餐厅、酒吧和本地小店", noteFr: "bon quartier le soir pour restaurants, bars et boutiques locales", budget: "medium", destinationQuery: "Queen West Toronto" },
 ];
 
 export function getStopMeta(stopId: string): Promise<StopMeta> {
@@ -1347,6 +1395,7 @@ function buildGuideRoute(places: GuidePlace[], profile: ReturnType<typeof getGui
 }
 
 function answerGuideQuestion(input: string, context: TransitAssistantContext): TransitAssistantAnswer {
+  const language = detectResponseLanguage(input);
   const shouldInheritGuideContext = context.lastIntent === "guide" &&
     !/\b(?:guide|itinerary|recommend|recommendation|suggest|things?\s+to\s+do|places?\s+to\s+(?:go|visit|eat|see)|plan\s+my\s+day)\b|(?:攻略|行程|推荐|去哪|哪里玩|玩什么)/i.test(input);
   const profile = getGuideProfile(input, context, shouldInheritGuideContext);
@@ -1361,17 +1410,37 @@ function answerGuideQuestion(input: string, context: TransitAssistantContext): T
   });
   const route = buildGuideRoute(candidates, profile);
   const routeText = route
-    .map((place, index) => `${index + 1}. ${place.name} (${place.area}): ${place.note}`)
-    .join(" ");
+    .map((place, index) => {
+      const note = language === "zh" ? place.noteZh : language === "fr" ? place.noteFr : place.note;
+      return `${index + 1}. ${place.name} (${place.area})\n   ${note}`;
+    })
+    .join("\n");
   const durationText =
     profile.duration === "one-day" ? "one-day" :
     profile.duration === "evening" ? "evening" :
     profile.duration === "morning" ? "morning" :
     profile.duration === "afternoon" ? "afternoon" :
     "half-day";
-  const budgetText = profile.budget ? ` Budget fit: ${profile.budget}.` : "";
+  const budgetLabel = language === "zh" ? "预算" : language === "fr" ? "Budget" : "Budget fit";
+  const budgetText = profile.budget ? `\n\n${budgetLabel}: ${profile.budget}.` : "";
   const nextDestination = route[0]?.destinationQuery;
-  const navigationHint = nextDestination ? ` You can ask "navigate to ${nextDestination}" when you choose a stop.` : "";
+  const navigationHint = nextDestination
+    ? language === "zh"
+      ? `\n\n下一步：可以问 "navigate to ${nextDestination}"，然后选择站点。`
+      : language === "fr"
+        ? `\n\nÉtape suivante : demandez "navigate to ${nextDestination}" quand vous choisissez un arrêt.`
+        : `\n\nNext step: ask "navigate to ${nextDestination}" when you choose a stop.`
+    : "";
+  const intro = language === "zh"
+    ? "这是一个多伦多攻略建议："
+    : language === "fr"
+      ? "Voici une idée d'itinéraire à Toronto :"
+      : `Here is a ${durationText} Toronto guide idea:`;
+  const beforeGoing = language === "zh"
+    ? "出发前：请确认实时营业时间、门票和预约。"
+    : language === "fr"
+      ? "Avant de partir : vérifiez les horaires, les billets et les réservations."
+      : "Before going: check live hours, tickets, and reservations.";
 
   return {
     matchedIntent: "guide",
@@ -1385,7 +1454,7 @@ function answerGuideQuestion(input: string, context: TransitAssistantContext): T
       guideTopic: profile.topic,
       lastIntent: "guide",
     },
-    text: `Here is a ${durationText} Toronto guide idea: ${routeText}${budgetText} I would keep live hours, tickets, and reservations checked before going.${navigationHint}`,
+    text: `${intro}\n\n${routeText}${budgetText}\n\n${beforeGoing}${navigationHint}`,
   };
 }
 
@@ -2009,5 +2078,9 @@ export async function askTransitAssistant(
   context: TransitAssistantContext = {},
 ): Promise<TransitAssistantAnswer> {
   const draft = await buildTransitAssistantAnswer(input, context);
-  return verifyTransitAssistantAnswer(input.trim(), draft);
+  if (draft.matchedIntent === "guide") {
+    return applyResponsePresentation(input, draft);
+  }
+  const verified = await verifyTransitAssistantAnswer(input.trim(), draft);
+  return applyResponsePresentation(input, verified);
 }
