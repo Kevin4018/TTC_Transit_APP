@@ -219,6 +219,9 @@ function LeafletMap({ center, zoom, userPos, locationStatus, stops, routeLine, d
       });
       destinationMarkerRef.current = L.marker(destinationPos, { icon }).addTo(map);
       destinationMarkerRef.current.bindTooltip("Destination", { permanent: false, direction: "top", offset: [0, -28] });
+      skipNextMoveEndRef.current = true;
+      lastSentCenterRef.current = destinationPos;
+      map.setView(destinationPos, map.getZoom(), { animate: false });
     }
 
     return () => {
@@ -1741,7 +1744,7 @@ function AiChatbot({ appContext }: { appContext?: TransitAssistantContext }) {
                 <div key={index} className={`flex gap-2 ${message.role === "user" ? "justify-end" : "justify-start items-start"}`}>
                   {message.role === "ai" && <MilkIcon size={30} />}
                   <div
-                    className={`max-w-[75%] rounded-[8px] px-3 py-[6px] font-['Inter',system-ui,sans-serif] text-[15px] leading-[1.4] ${
+                    className={`max-w-[75%] rounded-[8px] px-3 py-[6px] font-['Inter',system-ui,sans-serif] text-[15px] leading-[1.4] whitespace-pre-line ${
                       message.role === "user"
                         ? "bg-[#f5f5f5] border border-[#d9d9d9] text-[#1e1e1e]"
                         : "text-[#1e1e1e]"
@@ -2352,12 +2355,14 @@ export default function App() {
           zoom: canvasScale,
         }}
       >
-        <AccountControl
-          currentUser={currentUser}
-          onLogin={handleLogin}
-          onSignup={handleSignup}
-          onLogout={handleLogout}
-        />
+        {!searching && screen.id === "map" && !screen.fromSearch && (
+          <AccountControl
+            currentUser={currentUser}
+            onLogin={handleLogin}
+            onSignup={handleSignup}
+            onLogout={handleLogout}
+          />
+        )}
         {searching ? (
           <SearchOverlay
             query={query}
