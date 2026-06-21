@@ -209,12 +209,24 @@ const getGtfsDb = () => {
 const NIGHT_SERVICE_START_MINUTES = 1 * 60 + 30;
 const NIGHT_SERVICE_END_MINUTES = 5 * 60 + 30;
 
+const getTorontoClockMinutes = () => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Toronto",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+
+  return (hour % 24) * 60 + minute;
+};
+
 const getServicePeriod = (): ServicePeriod => {
   if (process.env.TTC_SERVICE_PERIOD === "day") return "day";
   if (process.env.TTC_SERVICE_PERIOD === "night") return "night";
 
-  const now = new Date();
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const currentMinutes = getTorontoClockMinutes();
 
   return currentMinutes >= NIGHT_SERVICE_START_MINUTES &&
     currentMinutes < NIGHT_SERVICE_END_MINUTES
@@ -579,8 +591,11 @@ const cleanHeadsign = (headsign: string) =>
     .trim();
 
 const getCurrentMinutes = () => {
-  const now = new Date();
-  return now.getHours() * 60 + now.getMinutes();
+  const currentMinutes = getTorontoClockMinutes();
+
+  return currentMinutes < NIGHT_SERVICE_END_MINUTES
+    ? currentMinutes + 24 * 60
+    : currentMinutes;
 };
 
 const findGtfsPrediction = (
