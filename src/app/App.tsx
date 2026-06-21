@@ -2056,6 +2056,7 @@ function AccountControl({ currentUser, onLogin, onSignup, onLogout }: AccountCon
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [confirmingLogout, setConfirmingLogout] = useState(false);
 
   const submit = async () => {
     const cleanedUsername = username.trim();
@@ -2086,6 +2087,11 @@ function AccountControl({ currentUser, onLogin, onSignup, onLogout }: AccountCon
     setMessage("");
   };
 
+  const confirmLogout = () => {
+    setConfirmingLogout(false);
+    onLogout();
+  };
+
   return (
     <>
       <div className="absolute right-3 top-2 z-[1500]">
@@ -2095,7 +2101,7 @@ function AccountControl({ currentUser, onLogin, onSignup, onLogout }: AccountCon
               {currentUser.username}
             </span>
             <button
-              onClick={onLogout}
+              onClick={() => setConfirmingLogout(true)}
               className="font-['SF_Compact',system-ui,sans-serif] text-[12px] text-[#007AFF]"
             >
               Logout
@@ -2188,6 +2194,33 @@ function AccountControl({ currentUser, onLogin, onSignup, onLogout }: AccountCon
                 className="h-11 rounded-[10px] bg-[#007AFF] disabled:bg-[#a6cfff] text-white font-['SF_Compact',system-ui,sans-serif] text-[15px]"
               >
                 {submitting ? "Working..." : mode === "login" ? "Login" : "Create account"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmingLogout && (
+        <div className="absolute inset-0 z-[2300] bg-black/20 flex items-center justify-center px-6">
+          <div className="w-full bg-white rounded-[16px] shadow-[0px_8px_24px_rgba(0,0,0,0.2)] border border-[#e5e5e5] p-5">
+            <p className="font-['SF_Compact',system-ui,sans-serif] text-[20px] text-black tracking-[-0.08px]">
+              Log out?
+            </p>
+            <p className="font-['SF_Compact',system-ui,sans-serif] text-[13px] text-[#666] leading-[1.35] mt-2">
+              You will need to log in again to see saved search history.
+            </p>
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={() => setConfirmingLogout(false)}
+                className="flex-1 h-11 rounded-[10px] bg-[#f2f2f2] text-[#1e1e1e] font-['SF_Compact',system-ui,sans-serif] text-[15px]"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmLogout}
+                className="flex-1 h-11 rounded-[10px] bg-[#ff3b30] text-white font-['SF_Compact',system-ui,sans-serif] text-[15px]"
+              >
+                Log out
               </button>
             </div>
           </div>
