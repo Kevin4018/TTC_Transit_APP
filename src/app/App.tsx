@@ -2235,7 +2235,7 @@ function AccountControl({ currentUser, onLogin, onSignup, onLogout }: AccountCon
 type AppScreen =
   | { id: "loading" }
   | { id: "map"; stopId: string; fromSearch: boolean }
-  | { id: "busReport"; stopId: string; route: number; dir: string }
+  | { id: "busReport"; stopId: string; route: number; dir: string; fromSearch: boolean }
   | { id: "destNav"; destId: string }
   | { id: "navigation"; destId: string; mode: NavigationMode };
 
@@ -2440,7 +2440,7 @@ export default function App() {
     setSearching(false);
     setSearchTarget("general");
     setQuery("");
-    setScreen({ id: "map", stopId, fromSearch: true });
+    setScreen({ id: "map", stopId, fromSearch: stopId !== homeStopId });
     getStopMeta(stopId)
       .then(meta => setMapCenter(meta.pos))
       .catch(() => null);
@@ -2482,7 +2482,7 @@ export default function App() {
     }
 
     if (item.type === "stop") {
-      setScreen({ id: "map", stopId: item.id, fromSearch: true });
+      setScreen({ id: "map", stopId: item.id, fromSearch: item.id !== homeStopId });
       if (item.pos) setMapCenter(item.pos);
       return;
     }
@@ -2492,13 +2492,13 @@ export default function App() {
 
   const handleOpenReport = (route: number, dir: string) => {
     if (screen.id === "map") {
-      setScreen({ id: "busReport", stopId: screen.stopId, route, dir });
+      setScreen({ id: "busReport", stopId: screen.stopId, route, dir, fromSearch: screen.fromSearch });
     }
   };
 
   const handleCloseReport = () => {
     if (screen.id === "busReport") {
-      setScreen({ id: "map", stopId: screen.stopId, fromSearch: true });
+      setScreen({ id: "map", stopId: screen.stopId, fromSearch: screen.fromSearch });
     }
   };
 
@@ -2563,6 +2563,7 @@ export default function App() {
     originPos: originOverride?.pos ?? userPos ?? undefined,
     originLabel: originOverride?.label ?? (userPos ? "Your location" : undefined),
   };
+  const isMainMapScreen = !searching && screen.id === "map" && !screen.fromSearch;
   const chatbotContext: TransitAssistantContext =
     screen.id === "map"
       ? { ...originContext, stopId: screen.stopId }
@@ -2589,7 +2590,7 @@ export default function App() {
           zoom: canvasScale,
         }}
       >
-        {!searching && screen.id === "map" && !screen.fromSearch && (
+        {isMainMapScreen && (
           <AccountControl
             currentUser={currentUser}
             onLogin={handleLogin}
