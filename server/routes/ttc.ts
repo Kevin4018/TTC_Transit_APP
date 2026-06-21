@@ -31,13 +31,28 @@ const formatDebugOtpDateTime = () => {
   const [year, month, day] = feedStart.split("-").map(Number);
   if (!year || !month || !day) return undefined;
 
-  const now = new Date();
-  const candidate = new Date(year, month - 1, day, now.getHours(), now.getMinutes(), now.getSeconds());
-  const dayOffset = (now.getDay() - candidate.getDay() + 7) % 7;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Toronto",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  const torontoNow = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  ) as Record<"year" | "month" | "day" | "hour" | "minute" | "second", string>;
+  const candidate = new Date(year, month - 1, day, Number(torontoNow.hour), Number(torontoNow.minute), Number(torontoNow.second));
+  const torontoToday = new Date(Number(torontoNow.year), Number(torontoNow.month) - 1, Number(torontoNow.day));
+  const dayOffset = (torontoToday.getDay() - candidate.getDay() + 7) % 7;
   candidate.setDate(candidate.getDate() + dayOffset);
 
   const pad = (value: number) => String(value).padStart(2, "0");
-  return `${candidate.getFullYear()}-${pad(candidate.getMonth() + 1)}-${pad(candidate.getDate())}T${pad(candidate.getHours())}:${pad(candidate.getMinutes())}:${pad(candidate.getSeconds())}-04:00`;
+  return `${candidate.getFullYear()}-${pad(candidate.getMonth() + 1)}-${pad(candidate.getDate())}T${torontoNow.hour}:${torontoNow.minute}:${torontoNow.second}-04:00`;
 };
 
 router.get("/debug/otp", async (_req, res) => {
