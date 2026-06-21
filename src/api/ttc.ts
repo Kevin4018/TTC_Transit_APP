@@ -469,6 +469,10 @@ function isLocationQuestion(input: string): boolean {
   return /\b(?:where\s+am\s+i|where\s+are\s+we|my\s+location|current\s+location|where\s+is\s+my\s+location|am\s+i\s+near)\b/i.test(input);
 }
 
+function isCurrentTimeQuestion(input: string): boolean {
+  return /\b(?:what(?:'s|\s+is)?\s+the\s+time|what\s+time\s+is\s+it|current\s+time|time\s+now)\b/i.test(input);
+}
+
 function isNextVehicleFollowUp(input: string): boolean {
   return /\b(?:miss|missed|next\s+(?:one|bus|vehicle|streetcar)|another\s+(?:one|bus|vehicle|streetcar))\b/i.test(input);
 }
@@ -815,6 +819,15 @@ function formatTransitTime(date: Date): string {
     minute: "2-digit",
     timeZone: "America/Toronto",
   });
+}
+
+function answerCurrentTimeQuestion(context: TransitAssistantContext): TransitAssistantAnswer {
+  return {
+    matchedIntent: "help",
+    confidence: 95,
+    context: { ...context, lastIntent: "help" },
+    text: `It is ${formatTransitTime(new Date())} in Toronto.`,
+  };
 }
 
 function describeCurrentWeather(weather: CurrentWeather): string {
@@ -1539,6 +1552,10 @@ export async function askTransitAssistant(
 
   if (isLocationQuestion(q)) {
     return answerLocationQuestion(context);
+  }
+
+  if (isCurrentTimeQuestion(q)) {
+    return answerCurrentTimeQuestion(context);
   }
 
   const classifiedIntent = await classifyTransitAssistantIntent(q, context);
