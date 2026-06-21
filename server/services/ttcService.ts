@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { existsSync } from "node:fs";
 
-type TransitSource = "mock" | "gtfs" | "otp";
+type TransitSource = "mock" | "gtfs" | "gtfs-rt" | "otp";
 type ServicePeriod = "day" | "night";
 
 export interface StopResult {
@@ -186,7 +186,34 @@ interface GtfsStopDeparture {
   departure_minutes: string;
 }
 
+interface RealtimeTripPrediction {
+  etaMin: number;
+  headsign: string;
+  arrivalEpochSec: number;
+  tripId?: string;
+  feedTimestampSec?: number;
+}
+
+interface RealtimeTripUpdate {
+  routeId: string;
+  tripId?: string;
+  feedTimestampSec?: number;
+  stopUpdates: Array<{
+    stopId: string;
+    arrivalEpochSec: number;
+  }>;
+}
+
 let gtfsDb: Database.Database | null | undefined;
+let realtimeTripUpdatesCache:
+  | { fetchedAtMs: number; updates: RealtimeTripUpdate[] }
+  | null = null;
+
+const TTC_GTFS_RT_TRIP_UPDATES_URL =
+  process.env.TTC_GTFS_RT_TRIP_UPDATES_URL ??
+  "https://gtfsrt.ttc.ca/trips/update?format=text";
+const TTC_GTFS_RT_CACHE_MS = 15_000;
+const TTC_GTFS_RT_TIMEOUT_MS = 4_000;
 
 const getGtfsDb = () => {
   if (gtfsDb !== undefined) return gtfsDb;
@@ -264,6 +291,69 @@ const getPredictionConfidence = (offsets: {
     Math.abs(offsets.other);
 
   return Math.max(62, Math.min(94, 94 - variableDelay * 4));
+};
+
+const parseRealtimeTripUpdates = (feedText: string): RealtimeTripUpdate[] => {
+  const updates: RealtimeTripUpdate[] = [];
+  const blocks = feedText.split(/\nentity\s+\{/g);
+
+  for (const block of blocks) {
+    if (!block.includes("trip_update")) continue;
+
+    const routeId = block.match(/route_id:\s*"([^"]+)"/)?.[1];
+    if (!routeId) continue;
+
+    const tripId = block.match(/trip_id:\s*"([^"]+)"/)?.[1];
+    const feedTimestampSec = Number(block.match(/\n\s*timestamp:\s*(\d+)/)?.[1] ?? 0);
+    const stopUpdates = block
+      .split(/stop_time_update\s+\{/g)
+      .slice(1)
+      .map((stopBlock) => {
+        const stopId = stopBlock.match(/stop_id:\s*"([^"]+)"/)?.[1];
+        const arrivalEpochSec = Number(
+          stopBlock.match(/(?:arrival|departure)\s+\{\s*time:\s*(\d+)/)?.[1] ?? 0,
+        );
+
+        if (!stopId || !Number.isFinite(arrivalEpochSec) || arrivalEpochSec <= 0) {
+          return null;
+        }
+
+        return { stopId, arrivalEpochSec };
+      })
+      .filter((value): value is RealtimeTripUpdate["stopUpdates"][number] => Boolean(value));
+
+    if (stopUpdates.length > 0) {
+      updates.push({
+        routeId,
+        tripId,
+        feedTimestampSec: Number.isFinite(feedTimestampSec) && feedTimestampSec > 0
+          ? feedTimestampSec
+          : undefined,
+        stopUpdates,
+      });
+    }
+  }
+
+  return updates;
+};
+
+const getRealtimeTripUpdates = async () => {
+  const now = Date.now();
+  if (realtimeTripUpdatesCache && now - realtimeTripUpdatesCache.fetchedAtMs < TTC_GTFS_RT_CACHE_MS) {
+    return realtimeTripUpdatesCache.updates;
+  }
+
+  const response = await fetch(TTC_GTFS_RT_TRIP_UPDATES_URL, {
+    signal: AbortSignal.timeout(TTC_GTFS_RT_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new Error(`TTC GTFS-Realtime request failed with ${response.status}`);
+  }
+
+  const updates = parseRealtimeTripUpdates(await response.text());
+  realtimeTripUpdatesCache = { fetchedAtMs: now, updates };
+  return updates;
 };
 
 const describeScheduleOffset = (routeId: number, offsetMin: number) => {
@@ -737,6 +827,66 @@ const findGtfsPrediction = (
       };
     })
     .sort((a, b) => a.etaMin - b.etaMin)[0] ?? null;
+};
+
+const getGtfsRouteIdentifiers = (
+  db: Database.Database,
+  routeId: number,
+) => {
+  const rows = db
+    .prepare(`
+      SELECT route_id, route_short_name
+      FROM routes
+      WHERE route_short_name = ?
+        OR route_id = ?
+    `)
+    .all(String(routeId), String(routeId)) as Array<{
+      route_id: string;
+      route_short_name: string;
+    }>;
+
+  const identifiers = new Set<string>([String(routeId)]);
+  rows.forEach((row) => {
+    identifiers.add(String(row.route_id));
+    identifiers.add(String(row.route_short_name));
+  });
+
+  return identifiers;
+};
+
+const findRealtimePrediction = async (
+  db: Database.Database,
+  stopId: string,
+  routeId: number,
+  fallbackHeadsign: string,
+): Promise<RealtimeTripPrediction | null> => {
+  const group = getGtfsStopGroup(db, stopId);
+  const stopIds = new Set(group?.stops.map((stop) => stop.stop_id) ?? [stopId]);
+  const routeIds = getGtfsRouteIdentifiers(db, routeId);
+  const nowEpochSec = Math.floor(Date.now() / 1000);
+  const updates = await getRealtimeTripUpdates();
+  const candidates: RealtimeTripPrediction[] = [];
+
+  for (const update of updates) {
+    if (!routeIds.has(update.routeId)) continue;
+
+    for (const stopUpdate of update.stopUpdates) {
+      if (!stopIds.has(stopUpdate.stopId)) continue;
+
+      const etaMin = Math.ceil((stopUpdate.arrivalEpochSec - nowEpochSec) / 60);
+      if (etaMin < 0 || etaMin > 180) continue;
+
+      candidates.push({
+        etaMin,
+        headsign: fallbackHeadsign || "Realtime",
+        arrivalEpochSec: stopUpdate.arrivalEpochSec,
+        tripId: update.tripId,
+        feedTimestampSec: update.feedTimestampSec,
+      });
+    }
+  }
+
+  return candidates.sort((a, b) => a.etaMin - b.etaMin)[0] ?? null;
 };
 
 const STOPS_DB: Record<string, StopRecord> = {
@@ -1336,11 +1486,11 @@ export const getNearbyStops = (_lat: number, _lng: number): NearbyStop[] =>
         name: stop.name,
         pos: stop.pos,
       }));
-export const getPrediction = (
+export const getPrediction = async (
   stopId: string,
   routeId: number,
   direction: string,
-): Prediction => {
+): Promise<Prediction> => {
   const db = getGtfsDb();
   const gtfsGroup = db ? getGtfsStopGroup(db, stopId) : null;
 
@@ -1354,22 +1504,34 @@ export const getPrediction = (
       );
     }
 
+    const realtimePrediction = await findRealtimePrediction(
+      db,
+      stopId,
+      routeId,
+      prediction.headsign,
+    ).catch(() => null);
+    const scheduleOffset = realtimePrediction
+      ? realtimePrediction.etaMin - prediction.etaMin
+      : 0;
     const offsets = {
-      schedule: 0,
+      schedule: scheduleOffset,
       weather: 0,
       traffic: 0,
       accidents: 0,
       construction: 0,
       other: 0,
     };
+    const etaMin = realtimePrediction?.etaMin ?? prediction.etaMin;
 
     return {
-      source: "gtfs",
+      source: realtimePrediction ? "gtfs-rt" : "gtfs",
       stopName: gtfsGroup.name,
       routeId,
-      direction: prediction.headsign,
-      etaMin: prediction.etaMin,
-      confidence: getPredictionConfidence(offsets),
+      direction: realtimePrediction?.headsign ?? prediction.headsign,
+      etaMin,
+      confidence: realtimePrediction
+        ? Math.max(88, getPredictionConfidence(offsets))
+        : getPredictionConfidence(offsets),
       dirs: getGtfsStopDirs(db, stopId, routeId),
       routes,
       offsets,
@@ -1408,27 +1570,30 @@ export const getPrediction = (
   };
 };
 
-export const getBusReport = (
+export const getBusReport = async (
   stopId: string,
   routeId: number,
   direction: string,
-): BusReport => {
+): Promise<BusReport> => {
   const db = getGtfsDb();
   const gtfsGroup = db ? getGtfsStopGroup(db, stopId) : null;
 
   if (db && gtfsGroup) {
-    const prediction = getPrediction(stopId, routeId, direction);
+    const prediction = await getPrediction(stopId, routeId, direction);
+    const isRealtime = prediction.source === "gtfs-rt";
 
     return {
-      source: "gtfs",
+      source: prediction.source,
       stopName: prediction.stopName,
       routeId,
       etaMin: prediction.etaMin,
       confidence: prediction.confidence,
       factors: {
         schedule: {
-          value: 0,
-          description: `${routeId} is using the next scheduled GTFS departure for ${prediction.direction}.`,
+          value: prediction.offsets.schedule,
+          description: isRealtime
+            ? `Route ${routeId} is using TTC GTFS-Realtime arrival data. ${describeScheduleOffset(routeId, prediction.offsets.schedule)}`
+            : `${routeId} is using the next scheduled GTFS departure for ${prediction.direction}.`,
         },
         weather: {
           value: 0,
@@ -1436,15 +1601,15 @@ export const getBusReport = (
         },
         traffic: {
           value: 0,
-          description: "Traffic delay is not connected to a live traffic feed yet.",
+          description: "Road traffic is checked separately through the live traffic feed.",
         },
         accidents: {
           value: 0,
-          description: `No live incident feed is connected for route ${routeId} yet.`,
+          description: `Live TTC arrival data is active; road incidents are checked separately for route ${routeId}.`,
         },
         construction: {
           value: 0,
-          description: `No live construction feed is connected for route ${routeId} yet.`,
+          description: `Live TTC arrival data is active; construction impact is checked separately for route ${routeId}.`,
         },
         other: {
           value: 0,

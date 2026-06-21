@@ -1,5 +1,5 @@
 import { apiRequest } from "./request";
-import { getTrafficImpact } from "./traffic";
+import { getTrafficImpact, type TrafficEvent, type TrafficImpact } from "./traffic";
 import { getEventImpact, type CityEvent, type EventImpact } from "./events";
 import { getHolidayImpact, type HolidayImpact } from "./holidays";
 import { searchYelpRecommendations, type YelpRecommendation } from "./places";
@@ -10,7 +10,7 @@ import {
   type WeatherForecastHour,
 } from "./weather";
 
-export type TransitSource = "mock" | "gtfs" | "ttc" | "otp";
+export type TransitSource = "mock" | "gtfs" | "gtfs-rt" | "ttc" | "otp";
 
 export interface StopResult {
   source: TransitSource;
@@ -504,7 +504,7 @@ async function verifyTransitAssistantAnswer(
 function findRouteInText(input: string): number | undefined {
   if (isAddressLikeDestination(input)) return undefined;
 
-  const route = input.match(/\b([1-9]\d{1,2})\b/);
+  const route = input.match(/(?:^|[^\d])([1-9]\d{1,2})(?=$|[^\d])/);
   return route ? Number(route[1]) : undefined;
 }
 
@@ -588,8 +588,9 @@ function isTransitArrivalRequest(input: string): boolean {
   if (isAddressLikeDestination(input)) return false;
   if (findRouteInText(input)) return true;
 
-  return /\b(?:when|eta|arriv|arrival|coming|due|next|how\s+long)\b/i.test(input) ||
-    /\b(?:bus|streetcar|vehicle|ttc|route)\b/i.test(input);
+  return /\b(?:when|eta|arriv|arrival|coming|due|next|how\s+long|real\s*time|live|prediction|estimate)\b/i.test(input) ||
+    /\b(?:bus|streetcar|vehicle|ttc|route|stop|station)\b/i.test(input) ||
+    /(?:多久|几分钟|什么时候到|下一班|实时|到站|公交|电车|车站|路线)/.test(input);
 }
 
 function isRouteNumberOnlyDestination(query: string | undefined): number | undefined {
@@ -629,6 +630,8 @@ async function findRouteStopByQuery(routeId: number, stopQuery: string): Promise
 function extractStopQuery(input: string): string | undefined {
   const cleaned = input.trim().replace(/[?.!]+$/, "");
   const patterns = [
+    /(?:^|[^\d])(?:[1-9]\d{1,2})\s*(?:在|到|去)\s*([^，。！？?]+?)(?:什么时候到|多久到|几分钟|到站|下一班|$)/i,
+    /(?:什么时候|多久|几分钟|下一班|到站).*(?:在|到)\s*([^，。！？?]+)$/i,
     /\b(?:at|from|near|by)\s+(.+)$/i,
     /\b(?:stop|station)\s+(.+)$/i,
   ];
@@ -637,11 +640,23 @@ function extractStopQuery(input: string): string | undefined {
     const match = cleaned.match(pattern);
     if (match?.[1]) {
       return match[1]
-        .replace(/\b(?:for|on|route|bus|streetcar|ttc|coming|arriving|arrive|eta|when|what|about|the|a|an)\b/gi, " ")
+        .replace(/\b(?:for|on|route|bus|streetcar|ttc|coming|arriving|arrive|arrival|eta|when|what|about|the|a|an|next|live|real\s*time)\b/gi, " ")
+        .replace(/(?:什么时候到|多久到|几分钟|下一班|实时|到站|公交|电车|车站|路线|预计)/g, " ")
         .replace(/\b[1-9]\d{1,2}\b/g, " ")
         .replace(/\s+/g, " ")
         .trim();
     }
+  }
+
+  if (findRouteInText(cleaned) && isEtaQuestion(cleaned)) {
+    const fallback = cleaned
+      .replace(/(?:^|[^\d])([1-9]\d{1,2})(?=$|[^\d])/g, " ")
+      .replace(/\b(?:for|on|route|bus|streetcar|ttc|coming|arriving|arrive|arrival|eta|when|what|about|the|a|an|next|live|real\s*time|now|current)\b/gi, " ")
+      .replace(/(?:现在|目前|当前|什么时候到|多久到|几分钟|下一班|实时|到站|公交|电车|车站|路线|预计|还有多久|要多久)/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (fallback.length >= 3 && /[a-z0-9\u4e00-\u9fff]/i.test(fallback)) return fallback;
   }
 
   return undefined;
@@ -762,7 +777,8 @@ function isWeatherQuestion(input: string): boolean {
 }
 
 function isTrafficQuestion(input: string): boolean {
-  return /\b(?:traffic|road|roads|congestion|jam|busy roads|rush hour)\b/i.test(input);
+  return /\b(?:traffic|road|roads|congestion|jam|busy roads|rush hour|accident|crash|collision|incident|roadwork|roadworks|construction|closure|closed road|detour|blocked|bottleneck|slowdown)\b/i.test(input) ||
+    /(?:交通|路况|拥堵|堵车|塞车|事故|车祸|施工|封路|道路关闭|绕行|改道|堵塞)/.test(input);
 }
 
 function isEventQuestion(input: string): boolean {
@@ -986,7 +1002,8 @@ function isDelayQuestion(input: string): boolean {
 }
 
 function isEtaQuestion(input: string): boolean {
-  return /\b(?:bus|streetcar|vehicle|ttc|route|stop|station|eta|arriv|when|how\s+long|next\s+(?:one|bus|vehicle|streetcar)|miss|missed|\b\d{3}\b)\b/i.test(input);
+  return /\b(?:bus|streetcar|vehicle|ttc|route|stop|station|eta|arriv|arrival|coming|due|when|how\s+long|next\s+(?:one|bus|vehicle|streetcar)|miss|missed|real\s*time|live|prediction|estimate|\b\d{3}\b)\b/i.test(input) ||
+    /(?:多久|几分钟|什么时候到|下一班|实时|到站|公交|电车|车站|路线|预计)/.test(input);
 }
 
 function isCrowdingQuestion(input: string): boolean {
@@ -1491,6 +1508,93 @@ function describeTrafficQuestionLocalized(
   return `${englishWhen}, ${describeTrafficLevel(trafficDelayMin)} traffic is expected${englishRouteText}. ${delayText}.`;
 }
 
+function trafficEventLabel(event: TrafficEvent, language: ResponseLanguage) {
+  if (language === "zh") {
+    if (event.type === "accident") return "事故";
+    if (event.type === "construction") return "施工/封路";
+    return "拥堵";
+  }
+  if (language === "fr") {
+    if (event.type === "accident") return "incident";
+    if (event.type === "construction") return "travaux/fermeture";
+    return "congestion";
+  }
+  if (event.type === "accident") return "incident";
+  if (event.type === "construction") return "roadwork/closure";
+  return "congestion";
+}
+
+function formatTrafficEvents(events: TrafficEvent[], language: ResponseLanguage) {
+  const visibleEvents = events
+    .filter(event => event.delayMin > 0 || event.type !== "traffic")
+    .slice(0, 3);
+
+  if (visibleEvents.length === 0) {
+    if (language === "zh") return "未发现附近明显事故、施工、封路或严重拥堵。";
+    if (language === "fr") return "Aucun incident, travaux, fermeture ou embouteillage important n'est signalé à proximité.";
+    return "No major nearby incidents, roadwork, closures, or heavy congestion are showing.";
+  }
+
+  return visibleEvents
+    .map((event, index) => {
+      const label = trafficEventLabel(event, language);
+      const delayText = event.delayMin > 0 ? `+${event.delayMin} min` : "monitor";
+      return `${index + 1}. ${event.title} (${label}, ${delayText})\n   ${event.description}`;
+    })
+    .join("\n");
+}
+
+function describeLiveTrafficQuestionLocalized(
+  input: string,
+  routeId: number,
+  hasRoute: boolean,
+  targetTime: Date | undefined,
+  impact: TrafficImpact,
+  locationLabel: string,
+): string {
+  const language = detectResponseLanguage(input);
+  const when = targetTime ? formatTransitTime(targetTime) : undefined;
+  const routeText = hasRoute ? `route ${routeId}` : locationLabel;
+  const totalDelay = Math.max(impact.trafficDelayMin, impact.accidentDelayMin, impact.constructionDelayMin);
+
+  if (language === "zh") {
+    return [
+      `${when ? `${when} 左右` : "现在"}，${routeText} 附近的实时路况显示：`,
+      totalDelay > 0
+        ? `预计 TTC 可能增加约 ${totalDelay} 分钟。`
+        : "目前没有明显额外交通延误。",
+      `具体情况：\n${formatTrafficEvents(impact.events, language)}`,
+      impact.source === "mock"
+        ? "实时交通 API 暂时不可用，因此使用本地时间和路线压力估算。"
+        : "回答基于实时道路速度、拥堵和事件数据。下一个路口或几分钟内可能变化。",
+    ].join("\n");
+  }
+
+  if (language === "fr") {
+    return [
+      `${when ? `Vers ${when}` : "Maintenant"}, l'état de la circulation près de ${routeText} indique :`,
+      totalDelay > 0
+        ? `Effet TTC estimé : environ +${totalDelay} min.`
+        : "Aucun retard routier important n'est prévu pour le moment.",
+      `Détails :\n${formatTrafficEvents(impact.events, language)}`,
+      impact.source === "mock"
+        ? "Les données en direct ne sont pas disponibles, donc j'utilise une estimation locale selon l'heure et la route."
+        : "La réponse utilise les vitesses routières, la congestion et les incidents en temps réel. La situation peut changer rapidement.",
+    ].join("\n");
+  }
+
+  return [
+    `${when ? `Around ${when}` : "Right now"}, live traffic near ${routeText} shows:`,
+    totalDelay > 0
+      ? `Estimated TTC impact: about +${totalDelay} min.`
+      : "No major extra traffic delay is showing right now.",
+    `Details:\n${formatTrafficEvents(impact.events, language)}`,
+    impact.source === "mock"
+      ? "Live traffic data is unavailable, so this uses the local time-of-day and route-pressure estimate."
+      : "This uses live road speed, congestion, closure, and incident data. Conditions can change within minutes.",
+  ].join("\n");
+}
+
 function describeEventImpact(impact: EventImpact, targetTime?: Date): string {
   const when = targetTime ? `around ${formatTransitTime(targetTime)}` : "right now";
 
@@ -1946,11 +2050,13 @@ async function answerWeatherQuestion(input: string, context: TransitAssistantCon
 async function answerTrafficQuestion(input: string, context: TransitAssistantContext): Promise<TransitAssistantAnswer> {
   const targetTime = parseAssistantTargetTime(input, getTimeBase(input, context));
   const routeId = findRouteInText(input) ?? context.routeId ?? 501;
+  const hasRoute = Boolean(findRouteInText(input) || context.routeId);
   const focus = await resolveAssistantLocationFocus(input, context);
   const [lat, lng] = focus?.pos ?? [43.6532, -79.3832];
   const language = detectResponseLanguage(input);
   const focusPrefix = formatLocationFocusLine(focus, language);
   const prefix = focusPrefix ? `${focusPrefix}\n\n` : "";
+  const locationLabel = focus?.label ?? context.originLabel ?? "downtown Toronto";
 
   try {
     const impact = await getTrafficImpact(lat, lng, routeId, targetTime?.toISOString());
@@ -1961,10 +2067,11 @@ async function answerTrafficQuestion(input: string, context: TransitAssistantCon
       context: {
         ...context,
         routeId,
+        aroundScope: context.aroundScope,
         lastTargetTimeIso: targetTime?.toISOString() ?? new Date().toISOString(),
         lastIntent: "traffic",
       },
-      text: `${prefix}${describeTrafficQuestionLocalized(input, routeId, Boolean(findRouteInText(input) || context.routeId), targetTime, impact.trafficDelayMin)}`,
+      text: `${prefix}${describeLiveTrafficQuestionLocalized(input, routeId, hasRoute, targetTime, impact, locationLabel)}`,
     };
   } catch {
     return {
@@ -2825,6 +2932,151 @@ function describePredictionLocalized(prediction: Prediction, input: string) {
   };
 }
 
+function getPredictionDataLabel(prediction: Prediction, language: ResponseLanguage): string {
+  if (prediction.source === "gtfs-rt") {
+    if (language === "zh") return "实时到站更新";
+    if (language === "fr") return "arrivée mise à jour en direct";
+    return "live arrival update";
+  }
+
+  if (prediction.source === "gtfs") {
+    if (language === "zh") return "按班表估算";
+    if (language === "fr") return "estimation selon l'horaire";
+    return "scheduled estimate";
+  }
+
+  if (language === "zh") return "本地估算";
+  if (language === "fr") return "estimation locale";
+  return "local estimate";
+}
+
+function formatPredictionAnswer(
+  prediction: Prediction,
+  input: string,
+  summary: string,
+  confidence: number,
+  options: {
+    intent?: "eta" | "delay" | "traffic" | "weather";
+    etaOverride?: number;
+    prefixLines?: string[];
+    factorLabel?: string;
+  } = {},
+) {
+  const language = detectResponseLanguage(input);
+  const stopName = prediction.stopName.replace(/[.]+$/, "");
+  const eta = options.etaOverride ?? prediction.etaMin;
+  const dataLabel = getPredictionDataLabel(prediction, language);
+  const factorLabel = options.factorLabel ??
+    (language === "zh" ? "影响因素" : language === "fr" ? "Facteurs" : "Factors");
+  const prefixLines = options.prefixLines ?? [];
+
+  if (language === "zh") {
+    return [
+      `路线 ${prediction.routeId}`,
+      `方向：${prediction.direction}`,
+      `到站：约 ${eta} 分钟`,
+      `站点：${stopName}`,
+      `到站状态：${dataLabel}`,
+      ...prefixLines,
+      `${factorLabel}：${summary}`,
+      `置信度：${confidence}%`,
+    ].join("\n");
+  }
+
+  if (language === "fr") {
+    return [
+      `Ligne ${prediction.routeId}`,
+      `Direction : ${prediction.direction}`,
+      `Arrivée : environ ${eta} min`,
+      `Arrêt : ${stopName}`,
+      `État : ${dataLabel}`,
+      ...prefixLines,
+      `${factorLabel} : ${summary}`,
+      `Confiance : ${confidence} %`,
+    ].join("\n");
+  }
+
+  return [
+    `Route ${prediction.routeId}`,
+    `Direction: ${prediction.direction}`,
+    `ETA: about ${eta} min`,
+    `Stop: ${stopName}`,
+    `Timing: ${dataLabel}`,
+    ...prefixLines,
+    `${factorLabel}: ${summary}`,
+    `Confidence: ${confidence}%`,
+  ].join("\n");
+}
+
+function localizedRouteNeedsStop(routeId: number, input: string, hasContextStop: boolean): string {
+  const language = detectResponseLanguage(input);
+  if (language === "zh") {
+    return [
+      `路线 ${routeId} 需要一个具体站点，我才能估算到站时间。`,
+      "",
+      `你可以这样问：${routeId} at College 什么时候到？`,
+      "或者先在地图上选择一个站点。",
+    ].join("\n");
+  }
+  if (language === "fr") {
+    return [
+      `La ligne ${routeId} a besoin d'un arrêt précis avant que je puisse estimer l'arrivée.`,
+      "",
+      `Essayez : "when is ${routeId} at College?"`,
+      hasContextStop ? "Vous pouvez aussi choisir un arrêt desservi par cette ligne." : "Vous pouvez aussi sélectionner un arrêt sur la carte.",
+    ].join("\n");
+  }
+  return [
+    `Route ${routeId} needs a specific stop before I can estimate the arrival time.`,
+    "",
+    `Try: when is ${routeId} at College?`,
+    hasContextStop ? `Or choose a stop served by route ${routeId}.` : "Or select a stop on the map first.",
+  ].join("\n");
+}
+
+function shouldKeepStructuredAnswer(answer: TransitAssistantAnswer): boolean {
+  return [
+    "eta",
+    "delay",
+    "traffic",
+    "weather",
+    "events",
+    "holidays",
+    "recommendation",
+    "guide",
+    "help",
+  ].includes(answer.matchedIntent);
+}
+
+function localizedStopRouteFallback(input: string): string {
+  const language = detectResponseLanguage(input);
+  if (language === "zh") {
+    return [
+      "我还没有匹配到具体 TTC 站点。",
+      "",
+      "请同时写路线和站点，例如：",
+      "501 at College",
+      "510 at Spadina and Dundas",
+    ].join("\n");
+  }
+  if (language === "fr") {
+    return [
+      "Je n'ai pas encore trouvé l'arrêt TTC précis.",
+      "",
+      "Ajoutez la ligne et l'arrêt, par exemple :",
+      "501 at College",
+      "510 at Spadina and Dundas",
+    ].join("\n");
+  }
+  return [
+    "I could not match that to a specific TTC stop yet.",
+    "",
+    "Include both the route and stop, for example:",
+    "501 at College",
+    "510 at Spadina and Dundas",
+  ].join("\n");
+}
+
 async function pickAssistantPrediction(
   input: string,
   context: TransitAssistantContext,
@@ -3032,8 +3284,16 @@ async function buildTransitAssistantAnswer(
           lastIntent: "help",
         },
         text: suggestedRoute
-          ? `I could not find route ${explicitRoute}. Did you mean route ${suggestedRoute}?`
-          : `I could not find route ${explicitRoute}. Which route or stop did you mean?`,
+          ? [
+            `I could not find route ${explicitRoute}.`,
+            "",
+            `Did you mean route ${suggestedRoute}?`,
+          ].join("\n")
+          : [
+            `I could not find route ${explicitRoute}.`,
+            "",
+            "Which route or stop did you mean?",
+          ].join("\n"),
       };
     }
 
@@ -3047,33 +3307,34 @@ async function buildTransitAssistantAnswer(
           pendingRouteClarification: explicitRoute,
           lastIntent: "help",
         },
-        text: `Route ${explicitRoute} needs a stop before I can estimate arrival time. Try asking "when is ${explicitRoute} at Spadina?"`,
+        text: localizedRouteNeedsStop(explicitRoute, q, Boolean(context.stopId)),
       };
     }
 
     const { prediction, context: nextContext } = await pickAssistantPrediction(q, scopedContext);
     const { confidence, summary } = describePredictionLocalized(prediction, q);
-    const stopName = prediction.stopName.replace(/[.]+$/, "");
     const language = detectResponseLanguage(q);
 
     if (wantsWeather) {
+      const weatherLine = language === "zh"
+        ? prediction.offsets.weather > 0
+          ? `天气影响：约 +${prediction.offsets.weather} 分钟`
+          : "天气影响：目前没有明显延误"
+        : language === "fr"
+          ? prediction.offsets.weather > 0
+            ? `Effet météo : environ +${prediction.offsets.weather} min`
+            : "Effet météo : aucun retard important"
+          : prediction.offsets.weather > 0
+            ? `Weather impact: about +${prediction.offsets.weather} min`
+            : "Weather impact: no major delay right now";
       return {
         matchedIntent: "weather",
         confidence,
         context: { ...nextContext, lastIntent: "weather" },
-        text: language === "zh"
-          ? [
-            prediction.offsets.weather > 0 ? `天气大约增加 ${prediction.offsets.weather} 分钟。` : "天气目前没有造成延误。",
-            `${prediction.routeId} ${prediction.direction} 在 ${stopName} 预计 ${prediction.etaMin} 分钟后到。`,
-          ].join("\n")
-          : language === "fr"
-            ? [
-              prediction.offsets.weather > 0 ? `La météo ajoute environ ${prediction.offsets.weather} min.` : "La météo n'ajoute pas de retard pour le moment.",
-              `La ligne ${prediction.routeId} ${prediction.direction} est estimée dans ${prediction.etaMin} min à ${stopName}.`,
-            ].join("\n")
-            : prediction.offsets.weather > 0
-              ? `Weather is adding about ${prediction.offsets.weather} min. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`
-              : `Weather is not adding delay right now. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`,
+        text: formatPredictionAnswer(prediction, q, summary, confidence, {
+          intent: "weather",
+          prefixLines: [weatherLine],
+        }),
       };
     }
 
@@ -3094,23 +3355,25 @@ async function buildTransitAssistantAnswer(
     }
 
     if (wantsTraffic) {
+      const trafficLine = language === "zh"
+        ? prediction.offsets.traffic > 0
+          ? `交通影响：约 +${prediction.offsets.traffic} 分钟`
+          : "交通影响：目前没有明显延误"
+        : language === "fr"
+          ? prediction.offsets.traffic > 0
+            ? `Effet circulation : environ +${prediction.offsets.traffic} min`
+            : "Effet circulation : aucun retard important"
+          : prediction.offsets.traffic > 0
+            ? `Traffic impact: about +${prediction.offsets.traffic} min`
+            : "Traffic impact: no major delay right now";
       return {
         matchedIntent: "traffic",
         confidence,
         context: { ...nextContext, lastIntent: "traffic" },
-        text: language === "zh"
-          ? [
-            prediction.offsets.traffic > 0 ? `交通大约增加 ${prediction.offsets.traffic} 分钟。` : "交通目前没有造成延误。",
-            `${prediction.routeId} ${prediction.direction} 在 ${stopName} 预计 ${prediction.etaMin} 分钟后到。`,
-          ].join("\n")
-          : language === "fr"
-            ? [
-              prediction.offsets.traffic > 0 ? `La circulation ajoute environ ${prediction.offsets.traffic} min.` : "La circulation n'ajoute pas de retard pour le moment.",
-              `La ligne ${prediction.routeId} ${prediction.direction} est estimée dans ${prediction.etaMin} min à ${stopName}.`,
-            ].join("\n")
-            : prediction.offsets.traffic > 0
-              ? `Traffic is adding about ${prediction.offsets.traffic} min. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`
-              : `Traffic is not adding delay right now. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`,
+        text: formatPredictionAnswer(prediction, q, summary, confidence, {
+          intent: "traffic",
+          prefixLines: [trafficLine],
+        }),
       };
     }
 
@@ -3139,19 +3402,11 @@ async function buildTransitAssistantAnswer(
         matchedIntent: "delay",
         confidence,
         context: { ...nextContext, lastIntent: "delay" },
-        text: language === "zh"
-          ? [
-            `${prediction.routeId} ${prediction.direction} 在 ${stopName} 预计 ${prediction.etaMin + extraDelay} 分钟后到。`,
-            `主要因素：${summary}${eventText}${holidayText}。`,
-            `置信度：${confidence}%。`,
-          ].join("\n")
-          : language === "fr"
-            ? [
-              `La ligne ${prediction.routeId} ${prediction.direction} est estimée dans ${prediction.etaMin + extraDelay} min à ${stopName}.`,
-              `Facteurs principaux : ${summary}${eventText}${holidayText}.`,
-              `Confiance : ${confidence} %.`,
-            ].join("\n")
-            : `Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin + extraDelay} min at ${stopName}. Main factors: ${summary}${eventText}${holidayText}. Confidence: ${confidence}%.`,
+        text: formatPredictionAnswer(prediction, q, `${summary}${eventText}${holidayText}`, confidence, {
+          intent: "delay",
+          etaOverride: prediction.etaMin + extraDelay,
+          factorLabel: language === "zh" ? "主要因素" : language === "fr" ? "Facteurs principaux" : "Main factors",
+        }),
       };
     }
 
@@ -3159,19 +3414,7 @@ async function buildTransitAssistantAnswer(
       matchedIntent: "eta",
       confidence,
       context: { ...nextContext, lastIntent: "eta" },
-      text: language === "zh"
-        ? [
-          `${prediction.routeId} ${prediction.direction} 在 ${stopName} 预计 ${prediction.etaMin} 分钟后到。`,
-          `因素：${summary}。`,
-          `置信度：${confidence}%。`,
-        ].join("\n")
-        : language === "fr"
-          ? [
-            `La ligne ${prediction.routeId} ${prediction.direction} est estimée dans ${prediction.etaMin} min à ${stopName}.`,
-            `Facteurs : ${summary}.`,
-            `Confiance : ${confidence} %.`,
-          ].join("\n")
-          : `Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}. ${summary}. Confidence: ${confidence}%.`,
+      text: formatPredictionAnswer(prediction, q, summary, confidence, { intent: "eta" }),
     };
   } catch {
     const routeOnly = findRouteInText(q);
@@ -3186,8 +3429,8 @@ async function buildTransitAssistantAnswer(
           lastIntent: "help",
         },
         text: context.stopId
-          ? `I do not see route ${routeOnly} at the current stop for the active service period. Try selecting a stop served by ${routeOnly}, or ask with a stop name like "when is ${routeOnly} at College?"`
-          : `Route ${routeOnly} needs a stop before I can estimate arrival time. Try asking "when is ${routeOnly} at College?" or select a stop on the map first.`,
+          ? localizedRouteNeedsStop(routeOnly, q, true)
+          : localizedRouteNeedsStop(routeOnly, q, false),
       };
     }
 
@@ -3195,7 +3438,7 @@ async function buildTransitAssistantAnswer(
       matchedIntent: "help",
       confidence: 65,
       context,
-      text: "I could not match that to a TTC stop yet. Try including a stop name and route number, like 501 at College.",
+      text: localizedStopRouteFallback(q),
     };
   }
 }
@@ -3205,7 +3448,7 @@ export async function askTransitAssistant(
   context: TransitAssistantContext = {},
 ): Promise<TransitAssistantAnswer> {
   const draft = await buildTransitAssistantAnswer(input, context);
-  if (draft.matchedIntent === "guide" || draft.matchedIntent === "recommendation") {
+  if (shouldKeepStructuredAnswer(draft)) {
     return applyResponsePresentation(input, draft);
   }
   const verified = await verifyTransitAssistantAnswer(input.trim(), draft);
