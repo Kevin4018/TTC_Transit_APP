@@ -181,10 +181,10 @@ router.get("/stops/:stopId", (req, res, next) => {
   }
 });
 
-router.get("/prediction", (req, res, next) => {
+router.get("/prediction", async (req, res, next) => {
   try {
     res.json(
-      getPrediction(
+      await getPrediction(
         String(req.query.stopId ?? ""),
         parseNumber(req.query.routeId),
         String(req.query.direction ?? ""),
@@ -195,10 +195,10 @@ router.get("/prediction", (req, res, next) => {
   }
 });
 
-router.get("/bus-report", (req, res, next) => {
+router.get("/bus-report", async (req, res, next) => {
   try {
     res.json(
-      getBusReport(
+      await getBusReport(
         String(req.query.stopId ?? ""),
         parseNumber(req.query.routeId),
         String(req.query.direction ?? ""),
