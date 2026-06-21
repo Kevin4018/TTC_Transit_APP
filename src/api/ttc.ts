@@ -1,5 +1,6 @@
 import { apiRequest } from "./request";
 import { getTrafficImpact, type TrafficEvent, type TrafficImpact } from "./traffic";
+import { estimateUnifiedDelays } from "./delayModel";
 import { getEventImpact, type CityEvent, type EventImpact } from "./events";
 import { getHolidayImpact, type HolidayImpact } from "./holidays";
 import { searchYelpRecommendations, type YelpRecommendation } from "./places";
@@ -1300,20 +1301,7 @@ function buildDestinationOptionsAnswer(
 }
 
 function estimateWeatherTransitDelay(weather: CurrentWeather): number {
-  const condition = weather.condition.toLowerCase();
-  let delay = 0;
-
-  if (/thunder|storm|sleet|freezing|ice|blizzard/.test(condition)) delay += 3;
-  else if (/snow|heavy rain|downpour/.test(condition)) delay += 2;
-  else if (/rain|drizzle|shower|fog|mist/.test(condition)) delay += 1;
-
-  if ((weather.precipitationMm ?? 0) >= 2) delay += 2;
-  else if ((weather.precipitationMm ?? 0) > 0) delay += 1;
-
-  if (weather.windKph >= 45) delay += 2;
-  else if (weather.windKph >= 30) delay += 1;
-
-  return Math.min(delay, 6);
+  return estimateUnifiedDelays({ weather }).weather?.value ?? 0;
 }
 
 function formatWeatherTime(observedAt: string): string {

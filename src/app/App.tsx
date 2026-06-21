@@ -352,72 +352,7 @@ import {
   getHolidayImpact,
   type HolidayImpact,
 } from "@/api/holidays";
-
-function estimateWeatherDelay(weather: CurrentWeather): number {
-  const condition = weather.condition.toLowerCase();
-  let delay = 0;
-
-  if (condition.includes("rain") || condition.includes("drizzle")) delay += 2;
-  if (condition.includes("snow") || condition.includes("sleet") || condition.includes("ice")) delay += 3;
-  if (condition.includes("thunder") || condition.includes("storm")) delay += 4;
-  if (condition.includes("fog") || condition.includes("mist") || condition.includes("overcast")) delay += 1;
-  if ((weather.precipitationMm ?? 0) >= 2) delay += 2;
-  else if ((weather.precipitationMm ?? 0) > 0) delay += 1;
-  if (weather.windKph >= 45) delay += 2;
-  else if (weather.windKph >= 30) delay += 1;
-
-  return Math.min(delay, 6);
-}
-
-function describeWeatherDelay(weather: CurrentWeather, delay: number): string {
-  if (delay === 0) {
-    return `Current weather is ${weather.condition.toLowerCase()}, ${weather.temperatureC} C, with wind ${weather.windKph} km/h. No weather delay is expected.`;
-  }
-
-  return `Current weather is ${weather.condition.toLowerCase()}, ${weather.temperatureC} C, with wind ${weather.windKph} km/h. Current conditions may add about ${delay} min to this trip.`;
-}
-
-function describeTrafficDelay(impact: TrafficImpact, key: "traffic" | "accident" | "construction") {
-  const event = impact.events.find(item => item.type === key || (key === "accident" && item.type === "accident"));
-
-  if (event) {
-    return `${event.title}. ${event.description}`;
-  }
-
-  if (key === "traffic") return "Traffic is normal, no additional delay expected.";
-  if (key === "accident") return "No traffic incidents are reported near this route.";
-  return "No construction activity is reported near this route.";
-}
-
-function describeConstructionDelay(impact: ConstructionImpact) {
-  const event = impact.events[0];
-
-  if (!event) {
-    return "No nearby construction activity is expected to affect this route.";
-  }
-
-  return `${event.title}. ${event.description} (${event.distanceKm.toFixed(1)} km away).`;
-}
-
-function describeEventDelay(impact: EventImpact) {
-  const event = impact.events[0];
-
-  if (!event) {
-    return "No nearby sports games, concerts, or major entertainment events are expected to affect this trip window.";
-  }
-
-  return `${event.description} (${event.distanceKm.toFixed(1)} km away).`;
-}
-
-function describeHolidayDelay(impact: HolidayImpact) {
-  const holiday = impact.holidays[0];
-
-  if (!holiday) {
-    return "No Ontario public holiday is detected for this trip date.";
-  }
-
-  return impact.description;
-}
+import { estimateUnifiedDelays } from "@/api/delayModel";
 
 function estimateConfidenceFromFactors(factors: BusReportData["factors"]) {
   const variableDelay = Object.entries(factors)
@@ -995,12 +930,20 @@ function MapScreen({ stopId, showControls, mapCenter, userPos, locationStatus, o
 
   const routes = prediction?.routes ?? [];
   const dirs = prediction?.dirs ?? ["Westbound", "Eastbound"];
-  const weatherDelay = weather ? estimateWeatherDelay(weather) : prediction?.offsets.weather;
-  const trafficDelay = trafficImpact?.trafficDelayMin ?? prediction?.offsets.traffic;
-  const accidentDelay = trafficImpact?.accidentDelayMin ?? prediction?.offsets.accidents;
-  const constructionDelay = constructionImpact?.constructionDelayMin ?? trafficImpact?.constructionDelayMin ?? prediction?.offsets.construction;
-  const eventDelay = eventImpact?.eventDelayMin ?? prediction?.offsets.events ?? 0;
-  const holidayDelay = holidayImpact?.holidayDelayMin ?? prediction?.offsets.holidays ?? 0;
+  const unifiedDelays = estimateUnifiedDelays({
+    weather,
+    trafficImpact,
+    constructionImpact,
+    eventImpact,
+    holidayImpact,
+    routeId: selectedRoute,
+  });
+  const weatherDelay = unifiedDelays.weather?.value ?? prediction?.offsets.weather;
+  const trafficDelay = unifiedDelays.traffic?.value ?? prediction?.offsets.traffic;
+  const accidentDelay = unifiedDelays.accidents?.value ?? prediction?.offsets.accidents;
+  const constructionDelay = unifiedDelays.construction?.value ?? prediction?.offsets.construction;
+  const eventDelay = unifiedDelays.events?.value ?? prediction?.offsets.events ?? 0;
+  const holidayDelay = unifiedDelays.holidays?.value ?? prediction?.offsets.holidays ?? 0;
   const displayedPrediction = prediction && weatherDelay !== undefined
     ? (() => {
       const offsets: Prediction["offsets"] = {
@@ -1198,49 +1141,21 @@ function BusReport({ route, dir, stopId, mapCenter, onClose }: BusReportProps) {
           },
         };
 
-        if (currentWeather) {
-          const weatherDelay = estimateWeatherDelay(currentWeather);
-          nextReport.factors.weather = {
-            value: weatherDelay,
-            description: describeWeatherDelay(currentWeather, weatherDelay),
-          };
-        }
+        const unifiedDelays = estimateUnifiedDelays({
+          weather: currentWeather,
+          trafficImpact,
+          constructionImpact,
+          eventImpact,
+          holidayImpact,
+          routeId: route,
+        });
 
-        if (trafficImpact) {
-          nextReport.factors.traffic = {
-            value: trafficImpact.trafficDelayMin,
-            description: describeTrafficDelay(trafficImpact, "traffic"),
-          };
-          nextReport.factors.accidents = {
-            value: trafficImpact.accidentDelayMin,
-            description: describeTrafficDelay(trafficImpact, "accident"),
-          };
-          nextReport.factors.construction = {
-            value: trafficImpact.constructionDelayMin,
-            description: describeTrafficDelay(trafficImpact, "construction"),
-          };
-        }
-
-        if (constructionImpact) {
-          nextReport.factors.construction = {
-            value: constructionImpact.constructionDelayMin,
-            description: describeConstructionDelay(constructionImpact),
-          };
-        }
-
-        if (eventImpact) {
-          nextReport.factors.events = {
-            value: eventImpact.eventDelayMin,
-            description: describeEventDelay(eventImpact),
-          };
-        }
-
-        if (holidayImpact) {
-          nextReport.factors.holidays = {
-            value: holidayImpact.holidayDelayMin,
-            description: describeHolidayDelay(holidayImpact),
-          };
-        }
+        if (unifiedDelays.weather) nextReport.factors.weather = unifiedDelays.weather;
+        if (unifiedDelays.traffic) nextReport.factors.traffic = unifiedDelays.traffic;
+        if (unifiedDelays.accidents) nextReport.factors.accidents = unifiedDelays.accidents;
+        if (unifiedDelays.construction) nextReport.factors.construction = unifiedDelays.construction;
+        if (unifiedDelays.events) nextReport.factors.events = unifiedDelays.events;
+        if (unifiedDelays.holidays) nextReport.factors.holidays = unifiedDelays.holidays;
 
         nextReport.etaMin = Math.max(0, sumFactorValues(nextReport.factors));
         nextReport.confidence = estimateConfidenceFromFactors(nextReport.factors);
