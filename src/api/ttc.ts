@@ -1,5 +1,5 @@
 import { apiRequest } from "./request";
-import { getTrafficImpact } from "./traffic";
+import { getTrafficImpact, type TrafficEvent, type TrafficImpact } from "./traffic";
 import { getEventImpact, type CityEvent, type EventImpact } from "./events";
 import { getHolidayImpact, type HolidayImpact } from "./holidays";
 import {
@@ -737,7 +737,8 @@ function isWeatherQuestion(input: string): boolean {
 }
 
 function isTrafficQuestion(input: string): boolean {
-  return /\b(?:traffic|road|roads|congestion|jam|busy roads|rush hour)\b/i.test(input);
+  return /\b(?:traffic|road|roads|congestion|jam|busy roads|rush hour|accident|crash|collision|incident|roadwork|roadworks|construction|closure|closed road|detour|blocked|bottleneck|slowdown)\b/i.test(input) ||
+    /(?:交通|路况|拥堵|堵车|塞车|事故|车祸|施工|封路|道路关闭|绕行|改道|堵塞)/.test(input);
 }
 
 function isEventQuestion(input: string): boolean {
@@ -1327,6 +1328,93 @@ function describeTrafficQuestionLocalized(
   return `${englishWhen}, ${describeTrafficLevel(trafficDelayMin)} traffic is expected${englishRouteText}. ${delayText}.`;
 }
 
+function trafficEventLabel(event: TrafficEvent, language: ResponseLanguage) {
+  if (language === "zh") {
+    if (event.type === "accident") return "事故";
+    if (event.type === "construction") return "施工/封路";
+    return "拥堵";
+  }
+  if (language === "fr") {
+    if (event.type === "accident") return "incident";
+    if (event.type === "construction") return "travaux/fermeture";
+    return "congestion";
+  }
+  if (event.type === "accident") return "incident";
+  if (event.type === "construction") return "roadwork/closure";
+  return "congestion";
+}
+
+function formatTrafficEvents(events: TrafficEvent[], language: ResponseLanguage) {
+  const visibleEvents = events
+    .filter(event => event.delayMin > 0 || event.type !== "traffic")
+    .slice(0, 3);
+
+  if (visibleEvents.length === 0) {
+    if (language === "zh") return "未发现附近明显事故、施工、封路或严重拥堵。";
+    if (language === "fr") return "Aucun incident, travaux, fermeture ou embouteillage important n'est signalé à proximité.";
+    return "No major nearby incidents, roadwork, closures, or heavy congestion are showing.";
+  }
+
+  return visibleEvents
+    .map((event, index) => {
+      const label = trafficEventLabel(event, language);
+      const delayText = event.delayMin > 0 ? `+${event.delayMin} min` : "monitor";
+      return `${index + 1}. ${event.title} (${label}, ${delayText})\n   ${event.description}`;
+    })
+    .join("\n");
+}
+
+function describeLiveTrafficQuestionLocalized(
+  input: string,
+  routeId: number,
+  hasRoute: boolean,
+  targetTime: Date | undefined,
+  impact: TrafficImpact,
+  locationLabel: string,
+): string {
+  const language = detectResponseLanguage(input);
+  const when = targetTime ? formatTransitTime(targetTime) : undefined;
+  const routeText = hasRoute ? `route ${routeId}` : locationLabel;
+  const totalDelay = Math.max(impact.trafficDelayMin, impact.accidentDelayMin, impact.constructionDelayMin);
+
+  if (language === "zh") {
+    return [
+      `${when ? `${when} 左右` : "现在"}，${routeText} 附近的实时路况显示：`,
+      totalDelay > 0
+        ? `预计 TTC 可能增加约 ${totalDelay} 分钟。`
+        : "目前没有明显额外交通延误。",
+      `具体情况：\n${formatTrafficEvents(impact.events, language)}`,
+      impact.source === "mock"
+        ? "实时交通 API 暂时不可用，因此使用本地时间和路线压力估算。"
+        : "回答基于实时道路速度、拥堵和事件数据。下一个路口或几分钟内可能变化。",
+    ].join("\n");
+  }
+
+  if (language === "fr") {
+    return [
+      `${when ? `Vers ${when}` : "Maintenant"}, l'état de la circulation près de ${routeText} indique :`,
+      totalDelay > 0
+        ? `Effet TTC estimé : environ +${totalDelay} min.`
+        : "Aucun retard routier important n'est prévu pour le moment.",
+      `Détails :\n${formatTrafficEvents(impact.events, language)}`,
+      impact.source === "mock"
+        ? "Les données en direct ne sont pas disponibles, donc j'utilise une estimation locale selon l'heure et la route."
+        : "La réponse utilise les vitesses routières, la congestion et les incidents en temps réel. La situation peut changer rapidement.",
+    ].join("\n");
+  }
+
+  return [
+    `${when ? `Around ${when}` : "Right now"}, live traffic near ${routeText} shows:`,
+    totalDelay > 0
+      ? `Estimated TTC impact: about +${totalDelay} min.`
+      : "No major extra traffic delay is showing right now.",
+    `Details:\n${formatTrafficEvents(impact.events, language)}`,
+    impact.source === "mock"
+      ? "Live traffic data is unavailable, so this uses the local time-of-day and route-pressure estimate."
+      : "This uses live road speed, congestion, closure, and incident data. Conditions can change within minutes.",
+  ].join("\n");
+}
+
 function describeEventImpact(impact: EventImpact, targetTime?: Date): string {
   const when = targetTime ? `around ${formatTransitTime(targetTime)}` : "right now";
 
@@ -1772,9 +1860,13 @@ async function answerWeatherQuestion(input: string, context: TransitAssistantCon
 async function answerTrafficQuestion(input: string, context: TransitAssistantContext): Promise<TransitAssistantAnswer> {
   const targetTime = parseAssistantTargetTime(input, getTimeBase(input, context));
   const routeId = findRouteInText(input) ?? context.routeId ?? 501;
+  const hasRoute = Boolean(findRouteInText(input) || context.routeId);
+  const queryLat = context.originPos?.[0] ?? 43.6532;
+  const queryLng = context.originPos?.[1] ?? -79.3832;
+  const locationLabel = context.originLabel ?? "downtown Toronto";
 
   try {
-    const impact = await getTrafficImpact(43.6532, -79.3832, routeId, targetTime?.toISOString());
+    const impact = await getTrafficImpact(queryLat, queryLng, routeId, targetTime?.toISOString());
 
     return {
       matchedIntent: "traffic",
@@ -1785,7 +1877,7 @@ async function answerTrafficQuestion(input: string, context: TransitAssistantCon
         lastTargetTimeIso: targetTime?.toISOString() ?? new Date().toISOString(),
         lastIntent: "traffic",
       },
-      text: describeTrafficQuestionLocalized(input, routeId, Boolean(findRouteInText(input) || context.routeId), targetTime, impact.trafficDelayMin),
+      text: describeLiveTrafficQuestionLocalized(input, routeId, hasRoute, targetTime, impact, locationLabel),
     };
   } catch {
     const language = detectResponseLanguage(input);

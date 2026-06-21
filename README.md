@@ -85,6 +85,7 @@ OTP_BASE_URL=http://localhost:8080
 OTP_PLAN_DATETIME=match-weekday
 OTP_GTFS_SERVICE_START_DATE=2026-06-21
 TICKETMASTER_API_KEY=optional_ticketmaster_discovery_api_key
+TOMTOM_API_KEY=optional_tomtom_traffic_api_key
 ```
 
 `GEMINI_API_KEY` is used only by the Express API server for chatbot intent classification and answer verification/correction. Do not put this key in a `VITE_` variable, because Vite exposes those values to the browser bundle.
@@ -92,6 +93,8 @@ TICKETMASTER_API_KEY=optional_ticketmaster_discovery_api_key
 `OTP_PLAN_DATETIME=match-weekday` maps the current clock time to the same weekday inside the GTFS feed calendar. This avoids failed transit searches when today's real date is outside the downloaded TTC feed's service dates.
 
 `TICKETMASTER_API_KEY` enables live Toronto sports, concert, festival, and entertainment event lookups through the Ticketmaster Discovery API. If it is not set, the app falls back to local major-venue pressure estimates for Toronto.
+
+`TOMTOM_API_KEY` enables live Toronto traffic flow and incident lookups through the TomTom Traffic API. The prediction algorithm uses live road speed, free-flow speed, road closure, accident, congestion, and roadwork signals when available. If it is not set or the API request fails, the app falls back to the local time-of-day, route-demand, and downtown-pressure traffic estimate.
 
 Holiday awareness uses the public Nager.Date holiday API for Canadian/Ontario public holidays. If that request fails, the app falls back to a small local set of fixed-date Ontario holidays.
 
