@@ -1616,6 +1616,96 @@ interface ChatMessage {
   text: string;
 }
 
+function normalizeChatText(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\ba\.m\./gi, "AM")
+    .replace(/\bp\.m\./gi, "PM")
+    .replace(/\bSt\./g, "St")
+    .replace(/\bAve\./g, "Ave")
+    .replace(/\bRd\./g, "Rd")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formatRouteEtaAnswer(text: string): string | null {
+  const normalized = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\n+/g, " ")
+    .replace(/\ba\.m\./gi, "AM")
+    .replace(/\bp\.m\./gi, "PM")
+    .replace(/\s+/g, " ")
+    .trim();
+  const match = normalized.match(/^Route\s+(\d+)\s+(.+?)\s+is estimated in\s+(\d+)\s+min\s+at\s+(.+?)\.?\s+((?:No major delay factors|Main factors|Factors|Weather|Traffic|Schedule).+?)\.?\s+Confidence:\s+(\d+)%\.?$/i);
+  if (!match) return null;
+
+  const [, route, direction, eta, stop, factors, confidence] = match;
+  return [
+    `Route ${route}`,
+    `Direction: ${normalizeChatText(direction)}`,
+    `ETA: ${eta} min`,
+    `Stop: ${normalizeChatText(stop)}`,
+    `Factors: ${normalizeChatText(factors).replace(/\.+$/, ".")}`,
+    `Confidence: ${confidence}%`,
+  ].join("\n");
+}
+
+function splitChatSentences(text: string): string[] {
+  return text
+    .replace(/\ba\.m\./gi, "AM")
+    .replace(/\bp\.m\./gi, "PM")
+    .split(/(?<=[.!?。！？])\s+/)
+    .map(sentence => sentence.trim())
+    .filter(Boolean);
+}
+
+function formatChatParagraph(paragraph: string): string {
+  const trimmed = paragraph.trim();
+  if (!trimmed) return "";
+  if (/^(?:\d+\.|- |Route \d+$|Direction:|ETA:|Stop:|Factors:|Confidence:|Condition:|Feels like:|Wind:|Humidity:|Observed:|TTC impact:)/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  const sentences = splitChatSentences(trimmed);
+  if (sentences.length >= 2) return sentences.join("\n");
+  if (trimmed.length <= 90) return trimmed;
+
+  return trimmed.replace(/,\s+(?=(?:and\s+)?(?:then|but|because|with|near|from|to)\b)/gi, ",\n");
+}
+
+function formatChatDisplayText(role: ChatMessage["role"], text: string): string {
+  if (role === "user") return text;
+
+  const routeEta = formatRouteEtaAnswer(text);
+  if (routeEta) return routeEta;
+
+  const prepared = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\ba\.m\./gi, "AM")
+    .replace(/\bp\.m\./gi, "PM")
+    .replace(/\bSt\./g, "St")
+    .replace(/\bAve\./g, "Ave")
+    .replace(/\bRd\./g, "Rd")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s+(Steps:|Main factors:|Factors:|Estimated arrival:|Before going:|Next step:|Budget fit:|Condition:|Feels like:|Wind:|Humidity:|Observed:|TTC impact:|Direction:|ETA:|Stop:|Confidence:)/g, "\n$1")
+    .replace(/\s+(步骤：|主要因素：|因素：|预计到达：|出发前：|下一步：|预算：)/g, "\n$1")
+    .replace(/\s+(Étapes :|Facteurs principaux :|Facteurs :|Arrivée estimée :|Avant de partir :|Étape suivante :|Budget :)/g, "\n$1")
+    .replace(/\s+(\d+\.\s)/g, "\n$1")
+    .replace(/(?<!\w)\s+(-\s+)/g, "\n$1");
+
+  return prepared
+    .split(/\n{2,}/)
+    .map(block => block
+      .split("\n")
+      .map(formatChatParagraph)
+      .filter(Boolean)
+      .join("\n"))
+    .filter(Boolean)
+    .join("\n\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function MilkIcon({ size = 30 }: { size?: number }) {
   return (
     <div className="relative overflow-hidden shrink-0" style={{ width: size, height: size }}>
@@ -1680,7 +1770,15 @@ function AiChatbot({ appContext }: { appContext?: TransitAssistantContext }) {
     } catch {
       setMessages(prev => [...prev, {
         role: "ai",
-        text: "I could not calculate that trip answer right now. Try asking about a route number, stop, delay, or destination.",
+        text: [
+          "I could not calculate that answer right now.",
+          "",
+          "Try asking with one clear detail:",
+          "- route number",
+          "- stop name",
+          "- destination",
+          "- delay, weather, traffic, events, or holidays",
+        ].join("\n"),
       }]);
     } finally {
       setIsTyping(false);
@@ -1750,7 +1848,7 @@ function AiChatbot({ appContext }: { appContext?: TransitAssistantContext }) {
                         : "text-[#1e1e1e]"
                     }`}
                   >
-                    {message.text}
+                    {formatChatDisplayText(message.role, message.text)}
                   </div>
                 </div>
               ))}

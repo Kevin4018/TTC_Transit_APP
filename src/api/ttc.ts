@@ -1,6 +1,6 @@
 import { apiRequest } from "./request";
 import { getTrafficImpact } from "./traffic";
-import { getEventImpact, type EventImpact } from "./events";
+import { getEventImpact, type CityEvent, type EventImpact } from "./events";
 import { getHolidayImpact, type HolidayImpact } from "./holidays";
 import {
   getCurrentWeather,
@@ -223,11 +223,63 @@ function localizeGuideAnswer(answer: TransitAssistantAnswer, language: ResponseL
   return { ...answer, text: localized };
 }
 
+function splitAssistantSentences(paragraph: string): string[] {
+  const sentences = paragraph.match(/[^.!?。！？]+[.!?。！？]?/g);
+  return sentences?.map(sentence => sentence.trim()).filter(Boolean) ?? [paragraph.trim()];
+}
+
+function formatAssistantParagraph(paragraph: string): string {
+  const trimmed = paragraph.trim();
+  if (!trimmed) return "";
+  if (/^(?:\d+\.|- )/.test(trimmed)) return trimmed;
+
+  const sentences = splitAssistantSentences(trimmed);
+  if (sentences.length <= 1) return trimmed;
+
+  if (sentences.length >= 2 && trimmed.length <= 220) {
+    return sentences.join("\n");
+  }
+
+  const lines: string[] = [];
+  let current = "";
+  for (const sentence of sentences) {
+    const candidate = current ? `${current} ${sentence}` : sentence;
+    if (candidate.length > 95 && current) {
+      lines.push(current);
+      current = sentence;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) lines.push(current);
+
+  return lines.join("\n");
+}
+
 function formatAssistantText(text: string): string {
-  return text
-    .replace(/([.!?])\s+(?=\d+\.\s)/g, "$1\n\n")
+  const prepared = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\ba\.m\./gi, "AM")
+    .replace(/\bp\.m\./gi, "PM")
+    .replace(/[ \t]+/g, " ")
+    .replace(/([.!?。！？])\s+(?=\d+\.\s)/g, "$1\n\n")
     .replace(/\s+(\d+\.\s)/g, "\n$1")
-    .replace(/\s+(Before going:|Next step:|Budget fit:|出发前：|下一步：|预算：|Avant de partir :|Étape suivante :|Budget :)/g, "\n\n$1")
+    .replace(/(?<!\w)\s+(-\s+)/g, "\n$1")
+    .replace(/\s+(Steps:|Main factors:|Factors:|Estimated arrival:|Before going:|Next step:|Budget fit:)/g, "\n\n$1")
+    .replace(/\s+(步骤：|主要因素：|因素：|预计到达：|出发前：|下一步：|预算：)/g, "\n\n$1")
+    .replace(/\s+(Étapes :|Facteurs principaux :|Facteurs :|Arrivée estimée :|Avant de partir :|Étape suivante :|Budget :)/g, "\n\n$1")
+    .replace(/:\s+(?=\d+\.\s)/g, ":\n\n")
+    .replace(/：\s*(?=\d+\.)/g, "：\n\n");
+
+  return prepared
+    .split(/\n{2,}/)
+    .map(block => block
+      .split("\n")
+      .map(formatAssistantParagraph)
+      .filter(Boolean)
+      .join("\n"))
+    .filter(Boolean)
+    .join("\n\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -239,6 +291,22 @@ function applyResponsePresentation(input: string, answer: TransitAssistantAnswer
     ...localized,
     text: formatAssistantText(localized.text),
   };
+}
+
+function localizedCapabilityText(language: ResponseLanguage): string {
+  if (language === "zh") {
+    return "我可以帮你查询 TTC 到站时间、附近站点、路线延误、交通、天气、活动、节假日和导航。";
+  }
+  if (language === "fr") {
+    return "Je peux vous aider avec les arrivées TTC, les arrêts proches, les retards, la circulation, la météo, les événements, les jours fériés et la navigation.";
+  }
+  return "I can help with TTC trip questions like arrival times, nearby stops, route delays, traffic, weather, events, holidays, and navigation.";
+}
+
+function localizedTryAgain(language: ResponseLanguage): string {
+  if (language === "zh") return "请稍后再试。";
+  if (language === "fr") return "Réessayez dans un instant.";
+  return "Try again in a moment.";
 }
 
 const ROUTE_TERMINALS: Record<number, { label: string; terminals: string[]; notes?: string }> = {
@@ -290,6 +358,12 @@ const GUIDE_PLACES: GuidePlace[] = [
   { name: "CF Toronto Eaton Centre", category: "shopping", area: "downtown", address: "220 Yonge St", bestFor: ["shopping", "rain", "central"], note: "central indoor shopping near Dundas and Queen", noteZh: "Dundas 和 Queen 附近的市中心室内购物点", noteFr: "centre commercial intérieur près de Dundas et Queen", indoor: true, budget: "medium", destinationQuery: "CF Toronto Eaton Centre" },
   { name: "Yorkville Village", category: "shopping", area: "midtown", address: "55 Avenue Rd", bestFor: ["shopping", "upscale", "cafes"], note: "good for a quieter upscale stop near ROM", noteZh: "ROM 附近较安静、偏高端的区域", noteFr: "option plus calme et haut de gamme près du ROM", indoor: true, budget: "higher", destinationQuery: "Yorkville Village" },
   { name: "Queen West", category: "night", area: "west downtown", address: "Queen St W", bestFor: ["night", "food", "shopping"], note: "good evening area for restaurants, bars, and local shops", noteZh: "晚上适合餐厅、酒吧和本地小店", noteFr: "bon quartier le soir pour restaurants, bars et boutiques locales", budget: "medium", destinationQuery: "Queen West Toronto" },
+  { name: "Distillery District", category: "culture", area: "east downtown", address: "55 Mill St", bestFor: ["date", "photos", "walking"], note: "brick-lane walking area with cafes, galleries, and seasonal markets", noteZh: "适合拍照、散步、咖啡和季节市集", noteFr: "quartier piéton avec cafés, galeries et marchés saisonniers", budget: "low", destinationQuery: "Distillery District" },
+  { name: "Harbourfront Centre", category: "attractions", area: "waterfront", address: "235 Queens Quay W", bestFor: ["views", "walking", "free"], note: "easy waterfront stop for lake views and casual walks", noteZh: "适合看湖景和轻松散步", noteFr: "bonne halte au bord du lac pour les vues et une promenade", budget: "free", destinationQuery: "Harbourfront Centre" },
+  { name: "Seven Lives Tacos", category: "food", area: "west downtown", address: "69 Kensington Ave", bestFor: ["food", "budget", "casual"], note: "quick casual food stop inside Kensington Market", noteZh: "Kensington Market 里适合快速吃饭的小店", noteFr: "halte rapide et décontractée dans Kensington Market", budget: "low", destinationQuery: "Seven Lives Tacos" },
+  { name: "Pai Northern Thai Kitchen", category: "food", area: "downtown", address: "18 Duncan St", bestFor: ["food", "dinner", "date"], note: "popular downtown dinner option; expect waits at busy times", noteZh: "市中心热门晚餐选择，高峰期可能需要排队", noteFr: "restaurant populaire au centre-ville; attendez-vous à de l'attente aux heures chargées", indoor: true, budget: "medium", destinationQuery: "Pai Northern Thai Kitchen" },
+  { name: "Dineen Coffee Co.", category: "food", area: "downtown", address: "140 Yonge St", bestFor: ["coffee", "rain", "quick"], note: "central coffee break near Queen and King", noteZh: "Queen 和 King 附近适合休息喝咖啡", noteFr: "pause café centrale près de Queen et King", indoor: true, budget: "low", destinationQuery: "Dineen Coffee Co" },
+  { name: "Little Canada", category: "attractions", area: "downtown", address: "10 Dundas St E", bestFor: ["kids", "rain", "first time"], note: "indoor miniature attraction near Dundas Station", noteZh: "Dundas Station 附近的室内迷你景点", noteFr: "attraction miniature intérieure près de Dundas Station", indoor: true, budget: "medium", destinationQuery: "Little Canada Toronto" },
 ];
 
 export function getStopMeta(stopId: string): Promise<StopMeta> {
@@ -606,11 +680,38 @@ function isGenericFollowUp(input: string): boolean {
   return /\b(?:what\s+about|how\s+about|and\s+(?:now|then|later|there|that|this)|also|then|later|now|today|tomorrow|tonight|this evening|same|again|that|this|it|there|those|them|why|how\s+(?:long|late|far|bad|busy)|when|where|which|should\s+i|can\s+i|do\s+i|is\s+(?:it|that|there)|are\s+(?:there|they)|does\s+(?:it|that)|more\s+options?|other\s+options?|any\s+other|alternatives?|what\s+else|something\s+else|miss|missed|next\s+(?:one|bus|vehicle|streetcar))\b/i.test(input);
 }
 
+function isUpcomingQuestion(input: string): boolean {
+  return /\b(?:upcoming|coming|next|soon|future|this\s+week|weekend|later\s+this\s+month|next\s+month|à\s+venir|prochain(?:e|s|es)?|bientôt|ce\s+week-end|cette\s+semaine)\b/i.test(input) ||
+    /(?:接下来|近期|即将|未来|这个周末|这周|下周|下个月|最近)/.test(input);
+}
+
+function formatAssistantDate(date: Date): string {
+  return date.toLocaleDateString("en-CA", {
+    timeZone: "America/Toronto",
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function getFutureDate(daysFromNow: number, hour = 12): Date {
+  const date = new Date();
+  date.setDate(date.getDate() + daysFromNow);
+  date.setHours(hour, 0, 0, 0);
+  return date;
+}
+
+function parseHolidayDate(dateText: string): Date {
+  const [year, month, day] = dateText.split("-").map(Number);
+  return new Date(year, month - 1, day, 12, 0, 0, 0);
+}
+
 function isGuideFollowUp(input: string, context: TransitAssistantContext): boolean {
   return context.lastIntent === "guide" && (
     isGenericFollowUp(input) ||
-    /\b(?:more|another|different|nearby|closer|cheaper|free|indoor|outdoor|rainy|kids|family|date|food|restaurant|shopping|museum|park|night|morning|afternoon|evening|half\s+day|one\s+day|shorter|longer)\b/i.test(input) ||
-    /(?:更多|换一个|附近|近一点|便宜|免费|室内|室外|下雨|亲子|情侣|吃|餐厅|购物|博物馆|公园|晚上|上午|下午|半日|一天)/i.test(input)
+    /\b(?:more|another|different|nearby|closer|cheaper|free|indoor|outdoor|rainy|kids|family|date|food|restaurant|shopping|museum|park|night|morning|afternoon|evening|half\s+day|one\s+day|shorter|longer|swap|replace|only|also|coffee|lunch|dinner|attraction|tourist)\b/i.test(input) ||
+    /\b(?:plus|moins|autre|près|gratuit|intérieur|extérieur|pluie|famille|enfants|restaurant|musée|parc|soir|matin|après-midi|journée|café)\b/i.test(input) ||
+    /(?:更多|换一个|附近|近一点|便宜|免费|室内|室外|下雨|亲子|情侣|吃|餐厅|购物|博物馆|公园|晚上|上午|下午|半日|一天|替换|只要|咖啡|午餐|晚餐|景点|游客)/i.test(input)
   );
 }
 
@@ -631,7 +732,8 @@ function isOptionsFollowUp(input: string): boolean {
 }
 
 function isWeatherQuestion(input: string): boolean {
-  return /\b(?:weather|rain|raining|snow|snowing|storm|wind|windy|ice|icy|temperature|temp|hot|cold|humid|humidity)\b/i.test(input);
+  return /\b(?:weather|rain|raining|snow|snowing|storm|wind|windy|ice|icy|temperature|temp|hot|cold|humid|humidity|météo|pluie|pleut|neige|orage|vent|température|chaud|froid|humide)\b/i.test(input) ||
+    /(?:天气|下雨|雨|下雪|雪|暴风|风|温度|气温|热|冷|湿度|潮湿)/.test(input);
 }
 
 function isTrafficQuestion(input: string): boolean {
@@ -639,16 +741,39 @@ function isTrafficQuestion(input: string): boolean {
 }
 
 function isEventQuestion(input: string): boolean {
-  return /\b(?:event|events|game|games|match|concert|show|festival|arena|stadium|rogers\s+centre|scotiabank\s+arena|bmo\s+field|budweiser\s+stage|entertainment|venue|crowds?)\b/i.test(input);
+  return /\b(?:event|events|game|games|match|concert|show|festival|arena|stadium|rogers\s+centre|scotiabank\s+arena|bmo\s+field|budweiser\s+stage|entertainment|venue|crowds?|événement|événements|matchs?|concerts?|spectacle|festival|stade|salle|foule)\b/i.test(input) ||
+    /(?:活动|赛事|比赛|演唱会|音乐会|表演|节日|场馆|人流|人群)/.test(input);
+}
+
+function extractEventQuery(input: string): string | undefined {
+  const cleaned = input
+    .trim()
+    .replace(/[?.!]+$/, "")
+    .replace(/\b(?:upcoming|coming|next|soon|future|this\s+week|weekend|event|events|game|games|concert|concerts|show|shows|festival|festivals|tell\s+me|about|any|are\s+there|is\s+there|what|when|where|in\s+toronto|nearby)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned || cleaned.length < 3) return undefined;
+  if (/^(?:sports?|entertainment|large|major|toronto|venue|venues)$/i.test(cleaned)) return undefined;
+  return cleaned;
+}
+
+function eventMatchesQuery(event: CityEvent, query: string): boolean {
+  const terms = query.toLowerCase().split(/\s+/).filter(term => term.length >= 3);
+  if (terms.length === 0) return true;
+  const haystack = `${event.title} ${event.venueName} ${event.description} ${event.kind}`.toLowerCase();
+  return terms.every(term => haystack.includes(term));
 }
 
 function isHolidayQuestion(input: string): boolean {
-  return /\b(?:holiday|holidays|public holiday|stat holiday|statutory holiday|long weekend|canada day|christmas|boxing day|new year|thanksgiving|family day|victoria day|labou?r day)\b/i.test(input);
+  return /\b(?:holiday|holidays|public holiday|stat holiday|statutory holiday|long weekend|canada day|christmas|boxing day|new year|thanksgiving|family day|victoria day|labou?r day|jour\s+férié|jours\s+fériés|congé|long\s+week-end|noël|action\s+de\s+grâce)\b/i.test(input) ||
+    /(?:假日|节假日|公共假期|法定假日|长周末|加拿大日|圣诞|新年|感恩节|家庭日|维多利亚日|劳动节)/.test(input);
 }
 
 function isGuideQuestion(input: string): boolean {
-  return /\b(?:guide|itinerary|recommend|recommendation|suggest|where\s+should\s+i\s+go|what\s+should\s+i\s+do|things?\s+to\s+do|places?\s+to\s+(?:go|visit|eat|see)|tourist|sightseeing|attractions?|restaurants?|food|eat|lunch|dinner|cafe|coffee|date|family|kids|rainy|rain\s+day|budget|cheap|free|half\s+day|one\s+day|day\s+trip|plan\s+my\s+day)\b/i.test(input) ||
-    /(?:攻略|行程|推荐|去哪|哪里玩|玩什么|吃什么|餐厅|景点|一日游|半日|亲子|情侣|下雨|预算|便宜|免费|附近)/i.test(input);
+  return /\b(?:guide|itinerary|recommend|recommendation|suggest|where\s+should\s+i\s+go|what\s+should\s+i\s+do|things?\s+to\s+do|places?\s+to\s+(?:go|visit|eat|see)|tourist|tourism|sightseeing|attractions?|restaurants?|food|eat|lunch|dinner|cafe|coffee|date|family|kids|rainy|rain\s+day|budget|cheap|free|half\s+day|one\s+day|day\s+trip|plan\s+my\s+day|plan\s+(?:a\s+)?day|travel\s+plan|trip\s+ideas?|where\s+to\s+eat|where\s+to\s+visit|visit\s+toronto)\b/i.test(input) ||
+    /\b(?:itinéraire|recommande|recommandation|suggère|où\s+aller|quoi\s+faire|à\s+visiter|restaurants?|manger|déjeuner|dîner|café|touriste|attractions?|musée|famille|enfants|pluie|budget|gratuit|demi-journée|journée|visiter\s+toronto)\b/i.test(input) ||
+    /(?:攻略|行程|推荐|去哪|哪里玩|玩什么|吃什么|餐厅|景点|一日游|半日|亲子|情侣|下雨|预算|便宜|免费|附近|旅游|旅行|安排|计划|玩一天|半天|咖啡|午餐|晚餐|博物馆|室内|室外|多伦多怎么玩)/i.test(input);
 }
 
 function isGreeting(input: string): boolean {
@@ -665,23 +790,30 @@ function isGreeting(input: string): boolean {
 
 function answerGreeting(input: string, context: TransitAssistantContext): TransitAssistantAnswer {
   const normalized = input.trim().toLowerCase();
-  let greeting = "Hello";
+  const language = detectResponseLanguage(input);
+  let greeting = language === "zh" ? "你好" : language === "fr" ? "Bonjour" : "Hello";
 
   if (/\b(?:good morning|morning)\b|早上好/.test(normalized)) {
-    greeting = "Good morning";
+    greeting = language === "zh" ? "早上好" : language === "fr" ? "Bonjour" : "Good morning";
   } else if (/\b(?:good afternoon|afternoon)\b|下午好/.test(normalized)) {
-    greeting = "Good afternoon";
+    greeting = language === "zh" ? "下午好" : language === "fr" ? "Bon après-midi" : "Good afternoon";
   } else if (/\b(?:good evening|evening)\b|晚上好/.test(normalized)) {
-    greeting = "Good evening";
+    greeting = language === "zh" ? "晚上好" : language === "fr" ? "Bonsoir" : "Good evening";
   } else if (/\b(?:good night)\b/.test(normalized)) {
-    greeting = "Good night";
+    greeting = language === "zh" ? "晚安" : language === "fr" ? "Bonne nuit" : "Good night";
   }
+
+  const helpText = language === "zh"
+    ? "我可以帮你查询 TTC 到站时间、附近站点、延误、交通、天气、活动、节假日和路线导航。"
+    : language === "fr"
+      ? "Je peux vous aider avec les arrivées TTC, les arrêts proches, les retards, la circulation, la météo, les événements, les jours fériés et la navigation."
+      : "I can help with TTC arrivals, nearby stops, delays, traffic, weather, events, holidays, and navigation.";
 
   return {
     matchedIntent: "help",
     confidence: 95,
     context: { ...context, lastIntent: "help" },
-    text: `${greeting}! I can help with TTC arrivals, nearby stops, delays, traffic, weather, events, holidays, and navigation.`,
+    text: `${greeting}! ${helpText}`,
   };
 }
 
@@ -928,7 +1060,9 @@ function calculateDestinationTiming(
 function buildDestinationOptionsAnswer(
   route: NavigationRoute,
   context: TransitAssistantContext,
+  input: string,
 ): { text: string; etaMin: number; arrivalTime: string } {
+  const language = detectResponseLanguage(input);
   if (route.available === false) {
     return {
       etaMin: 0,
@@ -936,7 +1070,7 @@ function buildDestinationOptionsAnswer(
       text: buildNavigationTripText(route, {
         etaMin: 0,
         arrivalTime: "",
-      }).join(" "),
+      }, language).join(language === "en" ? " " : "\n"),
     };
   }
 
@@ -953,6 +1087,8 @@ function buildDestinationOptionsAnswer(
       ? formatTransitClockMinutes(baseArrival + gap)
       : route.arrivalTime;
 
+    if (language === "zh") return `约 ${eta} 分钟，到达 ${arrival}`;
+    if (language === "fr") return `environ ${eta} min, arrivée ${arrival}`;
     return `about ${eta} min, arriving ${arrival}`;
   });
 
@@ -962,11 +1098,23 @@ function buildDestinationOptionsAnswer(
   return {
     etaMin: baseEta,
     arrivalTime: baseArrival !== undefined ? formatTransitClockMinutes(baseArrival) : route.arrivalTime,
-    text: [
-      `Yes. For ${route.destName}, you can keep using ${transport} route ${route.routeLabel} from ${stopName}.`,
-      `Upcoming options are ${options.join("; ")}.`,
-      `They all ride ${route.totalStops} stops after the ${route.walkMin} min walk to the stop.`,
-    ].join(" "),
+    text: language === "zh"
+      ? [
+        `可以。去 ${route.destName}，你可以继续从 ${stopName} 搭乘 ${transport} ${route.routeLabel}。`,
+        `接下来的选择：${options.join("；")}。`,
+        `都需要先步行 ${route.walkMin} 分钟到站，然后乘坐 ${route.totalStops} 站。`,
+      ].join("\n")
+      : language === "fr"
+        ? [
+          `Oui. Pour aller à ${route.destName}, vous pouvez continuer avec ${transport} ${route.routeLabel} depuis ${stopName}.`,
+          `Options à venir : ${options.join("; ")}.`,
+          `Chaque option demande ${route.walkMin} min de marche jusqu'à l'arrêt, puis ${route.totalStops} arrêts en transport.`,
+        ].join("\n")
+        : [
+          `Yes. For ${route.destName}, you can keep using ${transport} route ${route.routeLabel} from ${stopName}.`,
+          `Upcoming options are ${options.join("; ")}.`,
+          `They all ride ${route.totalStops} stops after the ${route.walkMin} min walk to the stop.`,
+        ].join(" "),
   };
 }
 
@@ -995,7 +1143,7 @@ function formatWeatherTime(observedAt: string): string {
     hour: "numeric",
     minute: "2-digit",
     timeZone: "America/Toronto",
-  });
+  }).replace(/\ba\.m\./i, "AM").replace(/\bp\.m\./i, "PM");
 }
 
 function formatTransitTime(date: Date): string {
@@ -1003,33 +1151,73 @@ function formatTransitTime(date: Date): string {
     hour: "numeric",
     minute: "2-digit",
     timeZone: "America/Toronto",
-  });
+  }).replace(/\ba\.m\./i, "AM").replace(/\bp\.m\./i, "PM");
 }
 
-function answerCurrentTimeQuestion(context: TransitAssistantContext): TransitAssistantAnswer {
+function answerCurrentTimeQuestion(input: string, context: TransitAssistantContext): TransitAssistantAnswer {
+  const language = detectResponseLanguage(input);
+  const time = formatTransitTime(new Date());
+  const text = language === "zh"
+    ? `现在多伦多时间是 ${time}。`
+    : language === "fr"
+      ? `Il est ${time} à Toronto.`
+      : `It is ${time} in Toronto.`;
+
   return {
     matchedIntent: "help",
     confidence: 95,
     context: { ...context, lastIntent: "help" },
-    text: `It is ${formatTransitTime(new Date())} in Toronto.`,
+    text,
   };
 }
 
 function describeCurrentWeather(weather: CurrentWeather): string {
   const delay = estimateWeatherTransitDelay(weather);
-  const precipitation = weather.precipitationMm && weather.precipitationMm > 0
-    ? ` Precipitation: ${weather.precipitationMm} mm.`
-    : "";
+  const precipitation = weather.precipitationMm && weather.precipitationMm > 0;
   const impact = delay > 0
-    ? `Current weather may add about ${delay} min to some TTC trips.`
-    : "Current weather should not add TTC delay.";
+    ? `Some TTC trips may take about ${delay} min longer.`
+    : "No extra TTC weather delay expected.";
 
   return [
-    `Right now in ${weather.locationName}, it is ${weather.condition.toLowerCase()} and ${Math.round(weather.temperatureC)} C, feeling like ${Math.round(weather.feelsLikeC)} C.`,
-    `Wind is ${Math.round(weather.windKph)} km/h and humidity is ${weather.humidity}%.`,
-    precipitation.trim(),
-    `Observed at ${formatWeatherTime(weather.observedAt)}. ${impact}`,
-  ].filter(Boolean).join(" ");
+    `Current weather in ${weather.locationName}:`,
+    `Condition: ${weather.condition.toLowerCase()}, ${Math.round(weather.temperatureC)} C`,
+    `Feels like: ${Math.round(weather.feelsLikeC)} C`,
+    `Wind: ${Math.round(weather.windKph)} km/h`,
+    `Humidity: ${weather.humidity}%`,
+    precipitation ? `Precipitation: ${weather.precipitationMm} mm` : "",
+    `Observed: ${formatWeatherTime(weather.observedAt)}`,
+    `TTC impact: ${impact}`,
+  ].filter(Boolean).join("\n");
+}
+
+function describeCurrentWeatherLocalized(weather: CurrentWeather, input: string): string {
+  const language = detectResponseLanguage(input);
+  if (language === "en") return describeCurrentWeather(weather);
+
+  const delay = estimateWeatherTransitDelay(weather);
+  const precipitation = weather.precipitationMm && weather.precipitationMm > 0
+    ? weather.precipitationMm
+    : undefined;
+
+  if (language === "zh") {
+    return [
+      `现在 ${weather.locationName} 的天气：${weather.condition.toLowerCase()}，${Math.round(weather.temperatureC)} C，体感 ${Math.round(weather.feelsLikeC)} C。`,
+      `风速：${Math.round(weather.windKph)} km/h；湿度：${weather.humidity}%。`,
+      precipitation !== undefined ? `降水量：${precipitation} mm。` : "",
+      delay > 0
+        ? `TTC 影响：部分行程可能增加约 ${delay} 分钟。`
+        : "TTC 影响：目前天气不应该造成明显延误。",
+    ].filter(Boolean).join("\n");
+  }
+
+  return [
+    `Météo actuelle à ${weather.locationName} : ${weather.condition.toLowerCase()}, ${Math.round(weather.temperatureC)} C, ressenti ${Math.round(weather.feelsLikeC)} C.`,
+    `Vent : ${Math.round(weather.windKph)} km/h ; humidité : ${weather.humidity} %.`,
+    precipitation !== undefined ? `Précipitations : ${precipitation} mm.` : "",
+    delay > 0
+      ? `Effet TTC : certains trajets peuvent prendre environ ${delay} min de plus.`
+      : "Effet TTC : la météo ne devrait pas ajouter de retard important pour le moment.",
+  ].filter(Boolean).join("\n");
 }
 
 function estimateForecastWeatherTransitDelay(hour: WeatherForecastHour): number {
@@ -1052,14 +1240,45 @@ function estimateForecastWeatherTransitDelay(hour: WeatherForecastHour): number 
 function describeForecastWeather(hour: WeatherForecastHour, targetTime: Date, locationName: string): string {
   const delay = estimateForecastWeatherTransitDelay(hour);
   const impact = delay > 0
-    ? `That weather may add about ${delay} min to some TTC trips.`
-    : "That weather should not add TTC delay.";
+    ? `Some TTC trips may take about ${delay} min longer.`
+    : "No extra TTC weather delay expected.";
 
   return [
-    `Around ${formatTransitTime(targetTime)} in ${locationName}, the forecast is ${hour.condition.toLowerCase()} and ${Math.round(hour.temperatureC)} C.`,
-    `Rain or snow chance is ${hour.precipitationProbability}% and wind is ${Math.round(hour.windKph)} km/h.`,
-    impact,
-  ].join(" ");
+    `Forecast around ${formatTransitTime(targetTime)} in ${locationName}:`,
+    `Condition: ${hour.condition.toLowerCase()}, ${Math.round(hour.temperatureC)} C`,
+    `Rain/snow chance: ${hour.precipitationProbability}%`,
+    `Wind: ${Math.round(hour.windKph)} km/h`,
+    `TTC impact: ${impact}`,
+  ].join("\n");
+}
+
+function describeForecastWeatherLocalized(
+  hour: WeatherForecastHour,
+  targetTime: Date,
+  locationName: string,
+  input: string,
+): string {
+  const language = detectResponseLanguage(input);
+  if (language === "en") return describeForecastWeather(hour, targetTime, locationName);
+
+  const delay = estimateForecastWeatherTransitDelay(hour);
+  if (language === "zh") {
+    return [
+      `${formatTransitTime(targetTime)} 左右，${locationName} 的预报是 ${hour.condition.toLowerCase()}，${Math.round(hour.temperatureC)} C。`,
+      `降雨/降雪概率：${hour.precipitationProbability}%；风速：${Math.round(hour.windKph)} km/h。`,
+      delay > 0
+        ? `TTC 影响：这种天气可能让部分行程增加约 ${delay} 分钟。`
+        : "TTC 影响：这种天气不应该造成明显延误。",
+    ].join("\n");
+  }
+
+  return [
+    `Vers ${formatTransitTime(targetTime)} à ${locationName}, la prévision est ${hour.condition.toLowerCase()} avec ${Math.round(hour.temperatureC)} C.`,
+    `Risque de pluie ou neige : ${hour.precipitationProbability} % ; vent : ${Math.round(hour.windKph)} km/h.`,
+    delay > 0
+      ? `Effet TTC : cette météo peut ajouter environ ${delay} min à certains trajets.`
+      : "Effet TTC : cette météo ne devrait pas ajouter de retard important.",
+  ].join("\n");
 }
 
 function describeTrafficLevel(delayMin: number): string {
@@ -1067,6 +1286,45 @@ function describeTrafficLevel(delayMin: number): string {
   if (delayMin >= 3) return "moderate";
   if (delayMin >= 1) return "light";
   return "light";
+}
+
+function describeTrafficQuestionLocalized(
+  input: string,
+  routeId: number,
+  hasRoute: boolean,
+  targetTime: Date | undefined,
+  trafficDelayMin: number,
+): string {
+  const language = detectResponseLanguage(input);
+  const when = targetTime ? formatTransitTime(targetTime) : undefined;
+  const routeText = hasRoute ? `route ${routeId}` : "downtown Toronto";
+
+  if (language === "zh") {
+    const level = trafficDelayMin >= 4 ? "较重" : trafficDelayMin >= 3 ? "中等" : "较轻";
+    return [
+      `${when ? `${when} 左右，` : "现在"}${routeText} 附近预计交通${level}。`,
+      trafficDelayMin > 0
+        ? `TTC 影响：交通可能增加约 ${trafficDelayMin} 分钟。`
+        : "TTC 影响：交通目前不应该造成明显延误。",
+    ].join("\n");
+  }
+
+  if (language === "fr") {
+    const level = trafficDelayMin >= 4 ? "dense" : trafficDelayMin >= 3 ? "modérée" : "légère";
+    return [
+      `${when ? `Vers ${when}, ` : "Maintenant, "}la circulation devrait être ${level} près de ${routeText}.`,
+      trafficDelayMin > 0
+        ? `Effet TTC : la circulation peut ajouter environ ${trafficDelayMin} min.`
+        : "Effet TTC : la circulation ne devrait pas ajouter de retard important.",
+    ].join("\n");
+  }
+
+  const englishWhen = targetTime ? `around ${formatTransitTime(targetTime)}` : "right now";
+  const englishRouteText = hasRoute ? ` for route ${routeId}` : " downtown";
+  const delayText = trafficDelayMin > 0
+    ? `Traffic may add about ${trafficDelayMin} min`
+    : "Traffic should not add delay";
+  return `${englishWhen}, ${describeTrafficLevel(trafficDelayMin)} traffic is expected${englishRouteText}. ${delayText}.`;
 }
 
 function describeEventImpact(impact: EventImpact, targetTime?: Date): string {
@@ -1087,6 +1345,144 @@ function describeEventImpact(impact: EventImpact, targetTime?: Date): string {
   return `${when}, ${delayText} Events: ${eventText}.`;
 }
 
+async function getUpcomingEventImpacts(routeId: number): Promise<EventImpact> {
+  const checks: Promise<EventImpact | null>[] = [];
+  for (let day = 0; day <= 14; day += 1) {
+    checks.push(getEventImpact(43.6532, -79.3832, routeId, getFutureDate(day, 13).toISOString()).catch(() => null));
+    checks.push(getEventImpact(43.6532, -79.3832, routeId, getFutureDate(day, 19).toISOString()).catch(() => null));
+  }
+
+  const impacts = await Promise.all(checks);
+  const events = new Map<string, CityEvent>();
+  let source: EventImpact["source"] = "mock";
+
+  for (const impact of impacts) {
+    if (!impact) continue;
+    if (impact.source === "ticketmaster") source = "ticketmaster";
+    for (const event of impact.events) {
+      events.set(event.id, event);
+    }
+  }
+
+  const eventList = [...events.values()]
+    .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime())
+    .slice(0, 8);
+
+  return {
+    source,
+    events: eventList,
+    eventDelayMin: Math.max(0, ...eventList.map(event => event.delayMin)),
+  };
+}
+
+function formatEventDateTime(startsAt: string): string {
+  const date = new Date(startsAt);
+  if (Number.isNaN(date.getTime())) return "time unavailable";
+
+  return date.toLocaleString("en-CA", {
+    timeZone: "America/Toronto",
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function describeEventImpactLocalized(
+  impact: EventImpact,
+  input: string,
+  targetTime?: Date,
+  query?: string,
+): string {
+  const language = detectResponseLanguage(input);
+  const filteredEvents = query ? impact.events.filter(event => eventMatchesQuery(event, query)) : impact.events;
+  const when = targetTime ? formatTransitTime(targetTime) : undefined;
+
+  if (impact.source !== "ticketmaster" && isUpcomingQuestion(input)) {
+    if (language === "zh") {
+      return [
+        "我现在不能确认真实的 upcoming Toronto event 名单。",
+        "",
+        "我仍然可以根据大型场馆估算 TTC 人流影响，例如 Rogers Centre、Scotiabank Arena、BMO Field 和 Budweiser Stage。",
+        "",
+        "下一步：你可以问一个具体时间或地点，例如 “tonight near Scotiabank Arena”。",
+      ].join("\n");
+    }
+    if (language === "fr") {
+      return [
+        "Je ne peux pas confirmer la liste réelle des événements à venir à Toronto pour l'instant.",
+        "",
+        "Je peux quand même estimer l'effet sur la TTC près des grands lieux comme Rogers Centre, Scotiabank Arena, BMO Field et Budweiser Stage.",
+        "",
+        "Étape suivante : demandez une heure ou un lieu précis, par exemple \"tonight near Scotiabank Arena\".",
+      ].join("\n");
+    }
+    return [
+      "I cannot confirm real upcoming Toronto event names from live event data right now.",
+      "",
+      "I can still estimate TTC crowd pressure near major venues like Rogers Centre, Scotiabank Arena, BMO Field, and Budweiser Stage.",
+      "",
+      'Next step: ask about a specific time or place, like "tonight near Scotiabank Arena".',
+    ].join("\n");
+  }
+
+  if (filteredEvents.length === 0) {
+    if (query) {
+      if (language === "zh") {
+        return [
+          `我没有在可用事件数据里找到 “${query}”。`,
+          "",
+          "我检查的是未来约 14 天、对多伦多 TTC 可能有影响的大型活动。",
+          "",
+          "下一步：可以换一个活动名、场馆名，或问 upcoming events。",
+        ].join("\n");
+      }
+      if (language === "fr") {
+        return [
+          `Je ne trouve pas "${query}" dans les données d'événements disponibles.`,
+          "",
+          "J'ai vérifié environ les 14 prochains jours pour les grands événements pouvant influencer la TTC à Toronto.",
+          "",
+          "Étape suivante : essayez un autre nom d'événement, un lieu, ou demandez les événements à venir.",
+        ].join("\n");
+      }
+      return [
+        `I do not see "${query}" in the available event data.`,
+        "",
+        "I checked about the next 14 days for larger Toronto events that may affect TTC travel.",
+        "",
+        "Next step: try another event name, a venue name, or ask for upcoming events.",
+      ].join("\n");
+    }
+
+    if (language === "zh") {
+      return `我没有看到${when ? ` ${when} 左右` : "现在"}附近有会明显影响 TTC 的大型比赛、演唱会、节日或娱乐活动。`;
+    }
+    if (language === "fr") {
+      return `Je ne vois pas de grand match, concert, festival ou événement de divertissement qui affecterait clairement la TTC${when ? ` vers ${when}` : " maintenant"}.`;
+    }
+    return `I do not see nearby sports games, concerts, festivals, or large entertainment events affecting TTC arrivals${when ? ` around ${when}` : " right now"}.`;
+  }
+
+  const list = filteredEvents.slice(0, 5)
+    .map((event, index) => `${index + 1}. ${event.title}\n   ${event.venueName} - ${formatEventDateTime(event.startsAt)}\n   Estimated TTC impact: about +${event.delayMin} min near the venue.`)
+    .join("\n");
+
+  if (language === "zh") {
+    const title = query ? `我找到这些和 “${query}” 相关的活动：` : "我在可用数据里看到这些 upcoming Toronto events：";
+    return `${title}\n\n${list}\n\n出发前：请确认门票、入场时间和场馆公告。`;
+  }
+
+  if (language === "fr") {
+    const title = query ? `J'ai trouvé ces événements liés à "${query}" :` : "Voici les événements à venir que je vois dans les données disponibles :";
+    return `${title}\n\n${list}\n\nAvant de partir : vérifiez les billets, l'heure d'entrée et les avis du lieu.`;
+  }
+
+  const title = query ? `I found these events related to "${query}":` : "Upcoming Toronto events I can see:";
+  return `${title}\n\n${list}\n\nBefore going: check tickets, entry time, and venue notices.`;
+}
+
 function describeHolidayImpact(impact: HolidayImpact, targetTime?: Date): string {
   const when = targetTime ? `around ${formatTransitTime(targetTime)}` : "today";
   const holiday = impact.holidays[0];
@@ -1100,6 +1496,107 @@ function describeHolidayImpact(impact: HolidayImpact, targetTime?: Date): string
     : "I do not expect extra TTC delay from it right now.";
 
   return `${holiday.name} is observed ${when}. ${delayText}`;
+}
+
+async function getUpcomingHolidayImpacts(daysAhead = 60): Promise<HolidayImpact[]> {
+  const checks = Array.from({ length: daysAhead + 1 }, (_, day) =>
+    getHolidayImpact(getFutureDate(day).toISOString()).catch(() => null),
+  );
+  const impacts = await Promise.all(checks);
+  const seen = new Set<string>();
+
+  return impacts
+    .filter((impact): impact is HolidayImpact => Boolean(impact?.isHoliday && impact.holidays.length > 0))
+    .filter(impact => {
+      const holiday = impact.holidays[0];
+      const key = `${holiday.date}:${holiday.name}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 6);
+}
+
+function describeHolidayImpactLocalized(
+  impact: HolidayImpact,
+  input: string,
+  targetTime?: Date,
+): string {
+  const language = detectResponseLanguage(input);
+  const when = targetTime ? formatAssistantDate(targetTime) : "today";
+  const holiday = impact.holidays[0];
+
+  if (!holiday) {
+    if (language === "zh") return `我没有看到 ${when} 是 Ontario public holiday。`;
+    if (language === "fr") return `Je ne vois pas de jour férié public en Ontario pour ${when}.`;
+    return `I do not see an Ontario public holiday for ${when}.`;
+  }
+
+  const date = formatAssistantDate(parseHolidayDate(holiday.date));
+  const delay = impact.holidayDelayMin > 0 ? `+${impact.holidayDelayMin} min` : "no extra delay expected";
+  if (language === "zh") {
+    return [
+      `${holiday.name} 是 Ontario public holiday。`,
+      "",
+      `日期：${date}`,
+      `TTC 影响：${delay}，因为节假日班次和出行模式可能和平日不同。`,
+    ].join("\n");
+  }
+  if (language === "fr") {
+    return [
+      `${holiday.name} est un jour férié public en Ontario.`,
+      "",
+      `Date : ${date}`,
+      `Effet TTC : ${delay}, car les horaires et les habitudes de déplacement peuvent changer les jours fériés.`,
+    ].join("\n");
+  }
+  return [
+    `${holiday.name} is an Ontario public holiday.`,
+    "",
+    `Date: ${date}`,
+    `TTC impact: ${delay}, because holiday schedules and travel patterns can differ from a normal weekday.`,
+  ].join("\n");
+}
+
+function describeUpcomingHolidaysLocalized(impacts: HolidayImpact[], input: string): string {
+  const language = detectResponseLanguage(input);
+
+  if (impacts.length === 0) {
+    if (language === "zh") {
+      return [
+        "我没有在未来 60 天的可用数据里看到 Ontario public holidays。",
+        "",
+        "下一步：你可以问具体节日，例如 Canada Day、Thanksgiving 或 Christmas。",
+      ].join("\n");
+    }
+    if (language === "fr") {
+      return [
+        "Je ne vois pas de jours fériés publics en Ontario dans les 60 prochains jours selon les données disponibles.",
+        "",
+        "Étape suivante : demandez un jour précis, par exemple Canada Day, Thanksgiving ou Christmas.",
+      ].join("\n");
+    }
+    return [
+      "I do not see Ontario public holidays in the next 60 days from the available data.",
+      "",
+      "Next step: ask about a specific holiday like Canada Day, Thanksgiving, or Christmas.",
+    ].join("\n");
+  }
+
+  const list = impacts.map((impact, index) => {
+    const holiday = impact.holidays[0];
+    const date = formatAssistantDate(parseHolidayDate(holiday.date));
+    const delay = impact.holidayDelayMin > 0 ? `about +${impact.holidayDelayMin} min` : "no extra delay expected";
+    return `${index + 1}. ${holiday.name} - ${date}\n   TTC impact: ${delay}.`;
+  }).join("\n");
+
+  if (language === "zh") {
+    return `我在可用数据里看到这些 upcoming Ontario holidays：\n\n${list}\n\n出发前：节假日 TTC 班次和客流可能和平日不同。`;
+  }
+  if (language === "fr") {
+    return `Voici les prochains jours fériés en Ontario que je vois dans les données disponibles :\n\n${list}\n\nAvant de partir : les horaires TTC et l'achalandage peuvent différer d'un jour normal.`;
+  }
+  return `Upcoming Ontario holidays I can see:\n\n${list}\n\nBefore going: TTC schedules and travel patterns may differ from a normal weekday.`;
 }
 
 function formatLegMode(mode: NavigationLeg["mode"]): string {
@@ -1123,13 +1620,30 @@ function describeNavigationLeg(leg: NavigationLeg): string {
   return `${mode}${routeText}${headsignText} from ${leg.fromName} to ${leg.toName} for ${leg.durationMin} min${distanceText}${timeText}`;
 }
 
-function buildNavigationTripText(route: NavigationRoute, timing: ReturnType<typeof calculateDestinationTiming>): string[] {
+function buildNavigationTripText(
+  route: NavigationRoute,
+  timing: ReturnType<typeof calculateDestinationTiming>,
+  language: ResponseLanguage = "en",
+): string[] {
   if (route.available === false) {
     const when = timing.targetTime ? ` around ${formatTransitTime(timing.targetTime)}` : " right now";
     const addressText = route.destAddress ? ` at ${route.destAddress}` : "";
     const message = route.message
       ? `${timing.targetTime ? `For around ${formatTransitTime(timing.targetTime)}, ` : ""}${route.message}`
       : `I found ${route.destName}${addressText}, but live transit routing is unavailable${when}.`;
+
+    if (language === "zh") {
+      return [
+        `我找到了 ${route.destName}${route.destAddress ? `，地址是 ${route.destAddress}` : ""}，但现在无法计算完整实时 TTC 路线。`,
+        "你仍然可以在导航里使用这个目的地，或换一种出行方式、输入更具体地址、选择附近地标。",
+      ];
+    }
+    if (language === "fr") {
+      return [
+        `J'ai trouvé ${route.destName}${route.destAddress ? ` à ${route.destAddress}` : ""}, mais je ne peux pas calculer un trajet TTC complet en temps réel maintenant.`,
+        "Vous pouvez quand même utiliser cette destination dans la navigation, essayer un autre mode, une adresse plus précise ou un repère proche.",
+      ];
+    }
 
     return [
       message,
@@ -1140,6 +1654,20 @@ function buildNavigationTripText(route: NavigationRoute, timing: ReturnType<type
   if (route.legs?.length) {
     const totalTime = route.durationMin ? `${route.durationMin} min` : `${timing.etaMin} min`;
     const legText = route.legs.slice(0, 5).map(describeNavigationLeg).join("; ");
+    if (language === "zh") {
+      return [
+        `去 ${route.destName} 大约需要 ${totalTime}。`,
+        `步骤：${legText}。`,
+        route.arrivalTime ? `预计到达：${route.arrivalTime}。` : "",
+      ].filter(Boolean);
+    }
+    if (language === "fr") {
+      return [
+        `Pour aller à ${route.destName}, le trajet prend environ ${totalTime}.`,
+        `Étapes : ${legText}.`,
+        route.arrivalTime ? `Arrivée estimée : ${route.arrivalTime}.` : "",
+      ].filter(Boolean);
+    }
     return [
       `To get to ${route.destName}, the trip is about ${totalTime}.`,
       `Steps: ${legText}.`,
@@ -1152,6 +1680,24 @@ function buildNavigationTripText(route: NavigationRoute, timing: ReturnType<type
   const intro = timing.timingNote
     ? `${timing.timingNote} take ${transport} route ${route.routeLabel} to get to ${route.destName}.`
     : `To get to ${route.destName}, take ${transport} route ${route.routeLabel}.`;
+
+  if (language === "zh") {
+    return [
+      `去 ${route.destName}，搭乘 ${transport} ${route.routeLabel}。`,
+      `先步行 ${route.walkMin} 分钟（${route.walkMeters} m）到 ${stopName}。`,
+      `车辆预计 ${timing.etaMin} 分钟后到达，然后乘坐 ${route.totalStops} 站。`,
+      `预计到达：${timing.arrivalTime}。`,
+    ];
+  }
+
+  if (language === "fr") {
+    return [
+      `Pour aller à ${route.destName}, prenez ${transport} ${route.routeLabel}.`,
+      `Marchez ${route.walkMin} min (${route.walkMeters} m) jusqu'à ${stopName}.`,
+      `Le véhicule est estimé dans ${timing.etaMin} min, puis vous ferez ${route.totalStops} arrêts.`,
+      `Arrivée estimée : ${timing.arrivalTime}.`,
+    ];
+  }
 
   return [
     intro,
@@ -1176,11 +1722,16 @@ async function answerWeatherQuestion(input: string, context: TransitAssistantCon
       }, undefined);
 
       if (!closest) {
+        const language = detectResponseLanguage(input);
         return {
           matchedIntent: "weather",
           confidence: 62,
           context: { ...context, lastIntent: "weather" },
-          text: "I can check the near-term forecast, but I do not have weather data that far ahead yet.",
+          text: language === "zh"
+            ? "我可以查询近期天气预报，但目前没有那么远的天气数据。"
+            : language === "fr"
+              ? "Je peux vérifier la prévision à court terme, mais je n'ai pas de données météo aussi lointaines."
+              : "I can check the near-term forecast, but I do not have weather data that far ahead yet.",
         };
       }
 
@@ -1188,7 +1739,7 @@ async function answerWeatherQuestion(input: string, context: TransitAssistantCon
         matchedIntent: "weather",
         confidence: 84,
         context: { ...context, lastTargetTimeIso: targetTime.toISOString(), lastIntent: "weather" },
-        text: describeForecastWeather(closest, targetTime, forecast.locationName),
+        text: describeForecastWeatherLocalized(closest, targetTime, forecast.locationName, input),
       };
     }
 
@@ -1201,14 +1752,19 @@ async function answerWeatherQuestion(input: string, context: TransitAssistantCon
         lastTargetTimeIso: targetTime?.toISOString() ?? new Date().toISOString(),
         lastIntent: "weather",
       },
-      text: describeCurrentWeather(weather),
+      text: describeCurrentWeatherLocalized(weather, input),
     };
   } catch {
+    const language = detectResponseLanguage(input);
     return {
       matchedIntent: "weather",
       confidence: 55,
       context: { ...context, lastIntent: "weather" },
-      text: "I cannot get the weather right now. Try again in a moment.",
+      text: language === "zh"
+        ? `我现在无法获取天气。${localizedTryAgain(language)}`
+        : language === "fr"
+          ? `Je ne peux pas obtenir la météo maintenant. ${localizedTryAgain(language)}`
+          : "I cannot get the weather right now. Try again in a moment.",
     };
   }
 }
@@ -1219,11 +1775,6 @@ async function answerTrafficQuestion(input: string, context: TransitAssistantCon
 
   try {
     const impact = await getTrafficImpact(43.6532, -79.3832, routeId, targetTime?.toISOString());
-    const when = targetTime ? `around ${formatTransitTime(targetTime)}` : "right now";
-    const routeText = findRouteInText(input) || context.routeId ? ` for route ${routeId}` : " downtown";
-    const delayText = impact.trafficDelayMin > 0
-      ? `Traffic may add about ${impact.trafficDelayMin} min`
-      : "Traffic should not add delay";
 
     return {
       matchedIntent: "traffic",
@@ -1234,14 +1785,19 @@ async function answerTrafficQuestion(input: string, context: TransitAssistantCon
         lastTargetTimeIso: targetTime?.toISOString() ?? new Date().toISOString(),
         lastIntent: "traffic",
       },
-      text: `${when}, ${describeTrafficLevel(impact.trafficDelayMin)} traffic is expected${routeText}. ${delayText}.`,
+      text: describeTrafficQuestionLocalized(input, routeId, Boolean(findRouteInText(input) || context.routeId), targetTime, impact.trafficDelayMin),
     };
   } catch {
+    const language = detectResponseLanguage(input);
     return {
       matchedIntent: "traffic",
       confidence: 55,
       context: { ...context, lastIntent: "traffic" },
-      text: "I cannot estimate traffic right now. Try again in a moment.",
+      text: language === "zh"
+        ? `我现在无法估算交通影响。${localizedTryAgain(language)}`
+        : language === "fr"
+          ? `Je ne peux pas estimer la circulation maintenant. ${localizedTryAgain(language)}`
+          : "I cannot estimate traffic right now. Try again in a moment.",
     };
   }
 }
@@ -1249,9 +1805,12 @@ async function answerTrafficQuestion(input: string, context: TransitAssistantCon
 async function answerEventQuestion(input: string, context: TransitAssistantContext): Promise<TransitAssistantAnswer> {
   const targetTime = parseAssistantTargetTime(input, getTimeBase(input, context));
   const routeId = findRouteInText(input) ?? context.routeId ?? 501;
+  const query = extractEventQuery(input);
 
   try {
-    const impact = await getEventImpact(43.6532, -79.3832, routeId, targetTime?.toISOString());
+    const impact = isUpcomingQuestion(input) || query
+      ? await getUpcomingEventImpacts(routeId)
+      : await getEventImpact(43.6532, -79.3832, routeId, targetTime?.toISOString());
 
     return {
       matchedIntent: "events",
@@ -1262,14 +1821,19 @@ async function answerEventQuestion(input: string, context: TransitAssistantConte
         lastTargetTimeIso: targetTime?.toISOString() ?? new Date().toISOString(),
         lastIntent: "events",
       },
-      text: describeEventImpact(impact, targetTime),
+      text: describeEventImpactLocalized(impact, input, targetTime, query),
     };
   } catch {
+    const language = detectResponseLanguage(input);
     return {
       matchedIntent: "events",
       confidence: 55,
       context: { ...context, lastIntent: "events" },
-      text: "I cannot check Toronto event pressure right now. Try again in a moment.",
+      text: language === "zh"
+        ? `我现在无法检查多伦多活动人流影响。${localizedTryAgain(language)}`
+        : language === "fr"
+          ? `Je ne peux pas vérifier l'effet des événements à Toronto maintenant. ${localizedTryAgain(language)}`
+          : "I cannot check Toronto event pressure right now. Try again in a moment.",
     };
   }
 }
@@ -1279,6 +1843,20 @@ async function answerHolidayQuestion(input: string, context: TransitAssistantCon
   const targetTime = parseNamedHolidayTargetDate(input, timeBase) ?? parseAssistantTargetTime(input, timeBase);
 
   try {
+    if (isUpcomingQuestion(input) && !targetTime) {
+      const impacts = await getUpcomingHolidayImpacts();
+      return {
+        matchedIntent: "holidays",
+        confidence: impacts.some(impact => impact.source === "nager") ? 86 : 70,
+        context: {
+          ...context,
+          lastTargetTimeIso: new Date().toISOString(),
+          lastIntent: "holidays",
+        },
+        text: describeUpcomingHolidaysLocalized(impacts, input),
+      };
+    }
+
     const impact = await getHolidayImpact(targetTime?.toISOString());
 
     return {
@@ -1289,28 +1867,40 @@ async function answerHolidayQuestion(input: string, context: TransitAssistantCon
         lastTargetTimeIso: targetTime?.toISOString() ?? new Date().toISOString(),
         lastIntent: "holidays",
       },
-      text: describeHolidayImpact(impact, targetTime),
+      text: describeHolidayImpactLocalized(impact, input, targetTime),
     };
   } catch {
+    const language = detectResponseLanguage(input);
     return {
       matchedIntent: "holidays",
       confidence: 55,
       context: { ...context, lastIntent: "holidays" },
-      text: "I cannot check holiday schedules right now. Try again in a moment.",
+      text: language === "zh"
+        ? `我现在无法检查节假日信息。${localizedTryAgain(language)}`
+        : language === "fr"
+          ? `Je ne peux pas vérifier les jours fériés maintenant. ${localizedTryAgain(language)}`
+          : "I cannot check holiday schedules right now. Try again in a moment.",
     };
   }
 }
 
-async function answerHolidayGreeting(context: TransitAssistantContext): Promise<TransitAssistantAnswer | null> {
+async function answerHolidayGreeting(input: string, context: TransitAssistantContext): Promise<TransitAssistantAnswer | null> {
   try {
     const impact = await getHolidayImpact();
     if (!impact.isHoliday || !impact.greeting) return null;
+    const language = detectResponseLanguage(input);
+    const helpText = localizedCapabilityText(language);
+    const text = language === "zh"
+      ? `${impact.greeting}！${impact.description}\n\n${helpText}`
+      : language === "fr"
+        ? `${impact.greeting}! ${impact.description}\n\n${helpText}`
+        : `${impact.greeting}! ${impact.description} Ask me about a route, stop, ETA, delay, traffic, weather, events, holidays, or destination.`;
 
     return {
       matchedIntent: "holidays",
       confidence: impact.source === "nager" ? 88 : 72,
       context: { ...context, lastIntent: "holidays" },
-      text: `${impact.greeting}! ${impact.description} Ask me about a route, stop, ETA, delay, traffic, weather, events, holidays, or destination.`,
+      text,
     };
   } catch {
     return null;
@@ -1394,6 +1984,101 @@ function buildGuideRoute(places: GuidePlace[], profile: ReturnType<typeof getGui
   return [...selected, ...fallback];
 }
 
+function getGuideDurationLabel(duration: string, language: ResponseLanguage): string {
+  const labels: Record<string, Record<ResponseLanguage, string>> = {
+    "one-day": { en: "one-day", zh: "一天", fr: "une journée" },
+    evening: { en: "evening", zh: "晚上", fr: "soirée" },
+    morning: { en: "morning", zh: "上午", fr: "matinée" },
+    afternoon: { en: "afternoon", zh: "下午", fr: "après-midi" },
+    "half-day": { en: "half-day", zh: "半天", fr: "demi-journée" },
+  };
+  return labels[duration]?.[language] ?? labels["half-day"][language];
+}
+
+function getGuideTopicLabel(topic: string, language: ResponseLanguage): string {
+  const labels: Record<string, Record<ResponseLanguage, string>> = {
+    food: { en: "food", zh: "美食", fr: "restaurants" },
+    parks: { en: "parks", zh: "公园", fr: "parcs" },
+    shopping: { en: "shopping", zh: "购物", fr: "magasinage" },
+    night: { en: "nightlife", zh: "夜晚活动", fr: "soirée" },
+    indoor: { en: "indoor", zh: "室内", fr: "intérieur" },
+    attractions: { en: "attractions", zh: "景点", fr: "attractions" },
+    general: { en: "general", zh: "综合", fr: "général" },
+  };
+  return labels[topic]?.[language] ?? labels.general[language];
+}
+
+function localizeGuideArea(area: string, language: ResponseLanguage): string {
+  if (language === "zh") {
+    const labels: Record<string, string> = {
+      downtown: "市中心",
+      "east downtown": "东市中心",
+      "west downtown": "西市中心",
+      midtown: "中城",
+      waterfront: "湖边",
+      "west end": "西区",
+    };
+    return labels[area] ?? area;
+  }
+  if (language === "fr") {
+    const labels: Record<string, string> = {
+      downtown: "centre-ville",
+      "east downtown": "est du centre-ville",
+      "west downtown": "ouest du centre-ville",
+      midtown: "midtown",
+      waterfront: "bord du lac",
+      "west end": "ouest de la ville",
+    };
+    return labels[area] ?? area;
+  }
+  return area;
+}
+
+function getGuideTimeSlot(index: number, total: number, duration: string, language: ResponseLanguage): string {
+  const slots: Record<string, Record<ResponseLanguage, string[]>> = {
+    "one-day": {
+      en: ["Morning", "Late morning", "Lunch", "Afternoon", "Evening"],
+      zh: ["上午", "接近中午", "午餐", "下午", "晚上"],
+      fr: ["Matin", "Fin de matinée", "Déjeuner", "Après-midi", "Soir"],
+    },
+    evening: {
+      en: ["Start", "Dinner", "After dinner"],
+      zh: ["开始", "晚餐", "饭后"],
+      fr: ["Début", "Dîner", "Après le dîner"],
+    },
+    morning: {
+      en: ["Start", "Coffee / quick stop", "Late morning"],
+      zh: ["开始", "咖啡/短停", "接近中午"],
+      fr: ["Début", "Café / arrêt court", "Fin de matinée"],
+    },
+    afternoon: {
+      en: ["Start", "Mid-afternoon", "Late afternoon"],
+      zh: ["开始", "下午中段", "傍晚前"],
+      fr: ["Début", "Milieu d'après-midi", "Fin d'après-midi"],
+    },
+    "half-day": {
+      en: ["Start", "Second stop", "Food / break", "Final stop"],
+      zh: ["开始", "第二站", "吃饭/休息", "最后一站"],
+      fr: ["Début", "Deuxième arrêt", "Repas / pause", "Dernier arrêt"],
+    },
+  };
+  const sequence = slots[duration]?.[language] ?? slots["half-day"][language];
+  return sequence[Math.min(index, sequence.length - 1)] ?? `${index + 1}/${total}`;
+}
+
+function buildGuidePlaceLine(place: GuidePlace, index: number, total: number, profile: ReturnType<typeof getGuideProfile>, language: ResponseLanguage): string {
+  const note = language === "zh" ? place.noteZh : language === "fr" ? place.noteFr : place.note;
+  const slot = getGuideTimeSlot(index, total, profile.duration, language);
+  const area = localizeGuideArea(place.area, language);
+  if (language === "zh") {
+    return `${index + 1}. ${slot}：${place.name}\n   区域：${area}\n   地址：${place.address}\n   推荐理由：${note}`;
+  }
+  if (language === "fr") {
+    return `${index + 1}. ${slot} : ${place.name}\n   Quartier : ${area}\n   Adresse : ${place.address}\n   Pourquoi : ${note}`;
+  }
+  return `${index + 1}. ${slot}: ${place.name}\n   Area: ${area}\n   Address: ${place.address}\n   Why: ${note}`;
+}
+
 function answerGuideQuestion(input: string, context: TransitAssistantContext): TransitAssistantAnswer {
   const language = detectResponseLanguage(input);
   const shouldInheritGuideContext = context.lastIntent === "guide" &&
@@ -1410,11 +2095,8 @@ function answerGuideQuestion(input: string, context: TransitAssistantContext): T
   });
   const route = buildGuideRoute(candidates, profile);
   const routeText = route
-    .map((place, index) => {
-      const note = language === "zh" ? place.noteZh : language === "fr" ? place.noteFr : place.note;
-      return `${index + 1}. ${place.name} (${place.area})\n   ${note}`;
-    })
-    .join("\n");
+    .map((place, index) => buildGuidePlaceLine(place, index, route.length, profile, language))
+    .join("\n\n");
   const durationText =
     profile.duration === "one-day" ? "one-day" :
     profile.duration === "evening" ? "evening" :
@@ -1432,15 +2114,26 @@ function answerGuideQuestion(input: string, context: TransitAssistantContext): T
         : `\n\nNext step: ask "navigate to ${nextDestination}" when you choose a stop.`
     : "";
   const intro = language === "zh"
-    ? "这是一个多伦多攻略建议："
+    ? "这是一个可直接执行的多伦多攻略："
     : language === "fr"
-      ? "Voici une idée d'itinéraire à Toronto :"
-      : `Here is a ${durationText} Toronto guide idea:`;
+      ? "Voici un itinéraire de Toronto prêt à utiliser :"
+      : `Here is a ready-to-use ${durationText} Toronto guide:`;
+  const fitLine = language === "zh"
+    ? `适合：${getGuideDurationLabel(profile.duration, language)} / ${getGuideTopicLabel(profile.topic, language)}${profile.audience ? ` / ${profile.audience}` : ""}${profile.budget ? ` / ${profile.budget} 预算` : ""}`
+    : language === "fr"
+      ? `Idéal pour : ${getGuideDurationLabel(profile.duration, language)} / ${getGuideTopicLabel(profile.topic, language)}${profile.audience ? ` / ${profile.audience}` : ""}${profile.budget ? ` / budget ${profile.budget}` : ""}`
+      : `Best fit: ${getGuideDurationLabel(profile.duration, language)} / ${getGuideTopicLabel(profile.topic, language)}${profile.audience ? ` / ${profile.audience}` : ""}${profile.budget ? ` / ${profile.budget} budget` : ""}`;
+  const transitHint = language === "zh"
+    ? "交通建议：选择第一个地点后，可以直接问我导航；我会把它带到现有 navigation 页面。"
+    : language === "fr"
+      ? "Transport : choisissez le premier lieu puis demandez la navigation; je l'enverrai vers la page de navigation existante."
+      : "Transit: choose the first stop, then ask me to navigate; I can send it into the existing navigation flow.";
   const beforeGoing = language === "zh"
     ? "出发前：请确认实时营业时间、门票和预约。"
     : language === "fr"
       ? "Avant de partir : vérifiez les horaires, les billets et les réservations."
       : "Before going: check live hours, tickets, and reservations.";
+  const planLabel = language === "zh" ? "行程：" : language === "fr" ? "Plan :" : "Plan:";
 
   return {
     matchedIntent: "guide",
@@ -1454,7 +2147,7 @@ function answerGuideQuestion(input: string, context: TransitAssistantContext): T
       guideTopic: profile.topic,
       lastIntent: "guide",
     },
-    text: `${intro}\n\n${routeText}${budgetText}\n\n${beforeGoing}${navigationHint}`,
+    text: `${intro}\n${fitLine}\n\n${planLabel}\n${routeText}${budgetText}\n\n${transitHint}\n\n${beforeGoing}${navigationHint}`,
   };
 }
 
@@ -1493,7 +2186,7 @@ async function answerDestinationQuestion(
 
   const route = await getNavigationRoute(context.originLabel ?? "current-location", destinationId, context.originPos);
   if (isOptionsFollowUp(input)) {
-    const optionsAnswer = buildDestinationOptionsAnswer(route, context);
+    const optionsAnswer = buildDestinationOptionsAnswer(route, context, input);
     return {
       matchedIntent: "navigation",
       confidence: 82,
@@ -1522,7 +2215,7 @@ async function answerDestinationQuestion(
     matchedIntent: "navigation",
     confidence: route.available === false ? 58 : timing.timingNote ? 78 : 86,
     context: nextContext,
-    text: buildNavigationTripText(route, timing).join(" "),
+    text: buildNavigationTripText(route, timing, detectResponseLanguage(input)).join(detectResponseLanguage(input) === "en" ? " " : "\n"),
   };
 }
 
@@ -1771,6 +2464,35 @@ function describePrediction(prediction: Prediction) {
   };
 }
 
+function describePredictionLocalized(prediction: Prediction, input: string) {
+  const language = detectResponseLanguage(input);
+  const confidence = prediction.confidence ?? 82;
+  if (language === "en") return describePrediction(prediction);
+
+  const parts: string[] = [];
+  if (prediction.offsets.schedule) {
+    const verb = prediction.offsets.schedule > 0
+      ? language === "zh" ? "增加" : "ajoute"
+      : language === "zh" ? "减少" : "réduit";
+    parts.push(language === "zh"
+      ? `班次因素${verb} ${Math.abs(prediction.offsets.schedule)} 分钟`
+      : `l'horaire ${verb} ${Math.abs(prediction.offsets.schedule)} min`);
+  }
+  if (prediction.offsets.weather) parts.push(language === "zh" ? `天气增加 ${prediction.offsets.weather} 分钟` : `la météo ajoute ${prediction.offsets.weather} min`);
+  if (prediction.offsets.traffic) parts.push(language === "zh" ? `交通增加 ${prediction.offsets.traffic} 分钟` : `la circulation ajoute ${prediction.offsets.traffic} min`);
+  if (prediction.offsets.events) parts.push(language === "zh" ? `活动增加 ${prediction.offsets.events} 分钟` : `les événements ajoutent ${prediction.offsets.events} min`);
+  if (prediction.offsets.holidays) parts.push(language === "zh" ? `节假日增加 ${prediction.offsets.holidays} 分钟` : `les jours fériés ajoutent ${prediction.offsets.holidays} min`);
+
+  return {
+    confidence,
+    summary: parts.length > 0
+      ? parts.join(language === "zh" ? "；" : "; ")
+      : language === "zh"
+        ? "目前没有显示明显延误因素。"
+        : "Aucun facteur de retard important n'est affiché pour le moment.",
+  };
+}
+
 async function pickAssistantPrediction(
   input: string,
   context: TransitAssistantContext,
@@ -1859,15 +2581,20 @@ async function buildTransitAssistantAnswer(
   const q = input.trim();
 
   if (!q) {
+    const language = detectResponseLanguage(q);
     return {
       matchedIntent: "help",
       confidence: 90,
-      text: 'Ask me about a TTC route, stop, ETA, delay, traffic, weather, events, holidays, or destination. For example: "When is the 501 coming at College?"',
+      text: language === "zh"
+        ? '你可以问我 TTC 路线、站点、到站时间、延误、交通、天气、活动、节假日或目的地导航。例如："501 at College 什么时候到？"'
+        : language === "fr"
+          ? 'Demandez-moi une ligne TTC, un arrêt, une arrivée, un retard, la circulation, la météo, les événements, les jours fériés ou une destination. Par exemple : "When is the 501 coming at College?"'
+          : 'Ask me about a TTC route, stop, ETA, delay, traffic, weather, events, holidays, or destination. For example: "When is the 501 coming at College?"',
     };
   }
 
   if (isGreeting(q)) {
-    const holidayGreeting = await answerHolidayGreeting(context);
+    const holidayGreeting = await answerHolidayGreeting(q, context);
     if (holidayGreeting) return holidayGreeting;
     return answerGreeting(q, context);
   }
@@ -1886,22 +2613,26 @@ async function buildTransitAssistantAnswer(
   }
 
   if (isCurrentTimeQuestion(q)) {
-    return answerCurrentTimeQuestion(context);
+    return answerCurrentTimeQuestion(q, context);
   }
 
   const classifiedIntent = await classifyTransitAssistantIntent(q, context);
   const llmIntent = classifiedIntent?.intent;
   const wantsGuide = isGuideQuestion(q) || llmIntent === "guide" || isGuideFollowUp(q, context);
+  const destinationQueryForNavigation = extractDestinationQuery(q);
+  const navigationVerbRequested = /\b(?:navigate|directions?|route\s+me|get\s+me|take\s+me|how\s+(?:do|can|should)\s+i\s+get|how\s+to\s+get|go\s+to|travel\s+to|transit\s+to|trip\s+to)\b/i.test(q);
   const explicitNavigationQuestion =
-    isNavigationQuestion(q) ||
-    (llmIntent === "navigation" && (extractDestinationQuery(q) !== undefined || (context.destinationId && isDestinationFollowUp(q))));
-  if (explicitNavigationQuestion) {
-    const destinationAnswer = await answerDestinationQuestion(q, context);
-    if (destinationAnswer) return destinationAnswer;
-  }
+    (!wantsGuide && isNavigationQuestion(q)) ||
+    (Boolean(destinationQueryForNavigation) && navigationVerbRequested && !/\b(?:things?\s+to\s+do|where\s+to|what\s+to|recommend|guide|itinerary|restaurants?|attractions?)\b/i.test(q)) ||
+    (llmIntent === "navigation" && (destinationQueryForNavigation !== undefined || (context.destinationId && isDestinationFollowUp(q))));
 
   if (wantsGuide) {
     return answerGuideQuestion(q, context);
+  }
+
+  if (explicitNavigationQuestion) {
+    const destinationAnswer = await answerDestinationQuestion(q, context);
+    if (destinationAnswer) return destinationAnswer;
   }
 
   const followUp = isGenericFollowUp(q) && hasAssistantContext(context);
@@ -1944,11 +2675,12 @@ async function buildTransitAssistantAnswer(
     ? llmIntent !== "out-of-scope"
     : /bus|ttc|route|stop|station|eta|arriv|delay|late|weather|traffic|event|game|concert|show|festival|holiday|long weekend|crowd|busy|navigate|direction|trip|destination|terminal|terminus|last stop|final stop|walk|go to|get to|take me|east|west|north|south|\b\d{3}\b/i.test(q) || followUp;
   if (!isTransitQuestion) {
+    const language = detectResponseLanguage(q);
     return {
       matchedIntent: "out-of-scope",
       confidence: 82,
       context,
-      text: "I can help with TTC trip questions like arrival times, nearby stops, route delays, traffic, weather, events, holidays, and navigation.",
+      text: localizedCapabilityText(language),
     };
   }
 
@@ -1986,17 +2718,28 @@ async function buildTransitAssistantAnswer(
     }
 
     const { prediction, context: nextContext } = await pickAssistantPrediction(q, context);
-    const { confidence, summary } = describePrediction(prediction);
+    const { confidence, summary } = describePredictionLocalized(prediction, q);
     const stopName = prediction.stopName.replace(/[.]+$/, "");
+    const language = detectResponseLanguage(q);
 
     if (wantsWeather) {
       return {
         matchedIntent: "weather",
         confidence,
         context: { ...nextContext, lastIntent: "weather" },
-        text: prediction.offsets.weather > 0
-          ? `Weather is adding about ${prediction.offsets.weather} min. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`
-          : `Weather is not adding delay right now. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`,
+        text: language === "zh"
+          ? [
+            prediction.offsets.weather > 0 ? `天气大约增加 ${prediction.offsets.weather} 分钟。` : "天气目前没有造成延误。",
+            `${prediction.routeId} ${prediction.direction} 在 ${stopName} 预计 ${prediction.etaMin} 分钟后到。`,
+          ].join("\n")
+          : language === "fr"
+            ? [
+              prediction.offsets.weather > 0 ? `La météo ajoute environ ${prediction.offsets.weather} min.` : "La météo n'ajoute pas de retard pour le moment.",
+              `La ligne ${prediction.routeId} ${prediction.direction} est estimée dans ${prediction.etaMin} min à ${stopName}.`,
+            ].join("\n")
+            : prediction.offsets.weather > 0
+              ? `Weather is adding about ${prediction.offsets.weather} min. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`
+              : `Weather is not adding delay right now. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`,
       };
     }
 
@@ -2005,7 +2748,11 @@ async function buildTransitAssistantAnswer(
         matchedIntent: "crowding",
         confidence,
         context: { ...nextContext, lastIntent: "crowding" },
-        text: "I cannot check crowding right now. I can still answer arrival times, delays, weather, traffic, accidents, and construction.",
+        text: language === "zh"
+          ? "我现在无法检查车厢拥挤程度。\n\n我仍然可以回答到站时间、延误、天气、交通、事故和施工。"
+          : language === "fr"
+            ? "Je ne peux pas vérifier l'achalandage maintenant.\n\nJe peux quand même répondre sur les arrivées, retards, météo, circulation, accidents et travaux."
+            : "I cannot check crowding right now. I can still answer arrival times, delays, weather, traffic, accidents, and construction.",
       };
     }
 
@@ -2014,9 +2761,19 @@ async function buildTransitAssistantAnswer(
         matchedIntent: "traffic",
         confidence,
         context: { ...nextContext, lastIntent: "traffic" },
-        text: prediction.offsets.traffic > 0
-          ? `Traffic is adding about ${prediction.offsets.traffic} min. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`
-          : `Traffic is not adding delay right now. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`,
+        text: language === "zh"
+          ? [
+            prediction.offsets.traffic > 0 ? `交通大约增加 ${prediction.offsets.traffic} 分钟。` : "交通目前没有造成延误。",
+            `${prediction.routeId} ${prediction.direction} 在 ${stopName} 预计 ${prediction.etaMin} 分钟后到。`,
+          ].join("\n")
+          : language === "fr"
+            ? [
+              prediction.offsets.traffic > 0 ? `La circulation ajoute environ ${prediction.offsets.traffic} min.` : "La circulation n'ajoute pas de retard pour le moment.",
+              `La ligne ${prediction.routeId} ${prediction.direction} est estimée dans ${prediction.etaMin} min à ${stopName}.`,
+            ].join("\n")
+            : prediction.offsets.traffic > 0
+              ? `Traffic is adding about ${prediction.offsets.traffic} min. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`
+              : `Traffic is not adding delay right now. Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}.`,
       };
     }
 
@@ -2025,18 +2782,39 @@ async function buildTransitAssistantAnswer(
         getEventImpact(43.6532, -79.3832, prediction.routeId).catch(() => null),
         getHolidayImpact().catch(() => null),
       ]);
+      const factorSeparator = language === "zh" ? "；" : "; ";
       const eventText = eventImpact && eventImpact.eventDelayMin > 0
-        ? `; events add ${eventImpact.eventDelayMin} min (${eventImpact.events[0]?.title ?? "large Toronto event activity"})`
+        ? language === "zh"
+          ? `${factorSeparator}活动增加 ${eventImpact.eventDelayMin} 分钟（${eventImpact.events[0]?.title ?? "多伦多大型活动"}）`
+          : language === "fr"
+            ? `${factorSeparator}les événements ajoutent ${eventImpact.eventDelayMin} min (${eventImpact.events[0]?.title ?? "grand événement à Toronto"})`
+            : `${factorSeparator}events add ${eventImpact.eventDelayMin} min (${eventImpact.events[0]?.title ?? "large Toronto event activity"})`
         : "";
       const holidayText = holidayImpact && holidayImpact.holidayDelayMin > 0
-        ? `; holidays add ${holidayImpact.holidayDelayMin} min (${holidayImpact.holidays[0]?.name ?? "Ontario public holiday"})`
+        ? language === "zh"
+          ? `${factorSeparator}节假日增加 ${holidayImpact.holidayDelayMin} 分钟（${holidayImpact.holidays[0]?.name ?? "Ontario public holiday"}）`
+          : language === "fr"
+            ? `${factorSeparator}les jours fériés ajoutent ${holidayImpact.holidayDelayMin} min (${holidayImpact.holidays[0]?.name ?? "jour férié en Ontario"})`
+            : `${factorSeparator}holidays add ${holidayImpact.holidayDelayMin} min (${holidayImpact.holidays[0]?.name ?? "Ontario public holiday"})`
         : "";
       const extraDelay = (eventImpact?.eventDelayMin ?? 0) + (holidayImpact?.holidayDelayMin ?? 0);
       return {
         matchedIntent: "delay",
         confidence,
         context: { ...nextContext, lastIntent: "delay" },
-        text: `Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin + extraDelay} min at ${stopName}. Main factors: ${summary}${eventText}${holidayText}. Confidence: ${confidence}%.`,
+        text: language === "zh"
+          ? [
+            `${prediction.routeId} ${prediction.direction} 在 ${stopName} 预计 ${prediction.etaMin + extraDelay} 分钟后到。`,
+            `主要因素：${summary}${eventText}${holidayText}。`,
+            `置信度：${confidence}%。`,
+          ].join("\n")
+          : language === "fr"
+            ? [
+              `La ligne ${prediction.routeId} ${prediction.direction} est estimée dans ${prediction.etaMin + extraDelay} min à ${stopName}.`,
+              `Facteurs principaux : ${summary}${eventText}${holidayText}.`,
+              `Confiance : ${confidence} %.`,
+            ].join("\n")
+            : `Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin + extraDelay} min at ${stopName}. Main factors: ${summary}${eventText}${holidayText}. Confidence: ${confidence}%.`,
       };
     }
 
@@ -2044,7 +2822,19 @@ async function buildTransitAssistantAnswer(
       matchedIntent: "eta",
       confidence,
       context: { ...nextContext, lastIntent: "eta" },
-      text: `Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}. ${summary}. Confidence: ${confidence}%.`,
+      text: language === "zh"
+        ? [
+          `${prediction.routeId} ${prediction.direction} 在 ${stopName} 预计 ${prediction.etaMin} 分钟后到。`,
+          `因素：${summary}。`,
+          `置信度：${confidence}%。`,
+        ].join("\n")
+        : language === "fr"
+          ? [
+            `La ligne ${prediction.routeId} ${prediction.direction} est estimée dans ${prediction.etaMin} min à ${stopName}.`,
+            `Facteurs : ${summary}.`,
+            `Confiance : ${confidence} %.`,
+          ].join("\n")
+          : `Route ${prediction.routeId} ${prediction.direction} is estimated in ${prediction.etaMin} min at ${stopName}. ${summary}. Confidence: ${confidence}%.`,
     };
   } catch {
     const routeOnly = findRouteInText(q);
