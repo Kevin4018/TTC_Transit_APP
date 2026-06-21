@@ -570,6 +570,10 @@ type StoredUser = {
 const USERS_STORAGE_KEY = "transportation-predictor-users";
 const SESSION_STORAGE_KEY = "transportation-predictor-session";
 const MAX_SEARCH_HISTORY = 8;
+const USERNAME_MIN_LENGTH = 3;
+const USERNAME_MAX_LENGTH = 24;
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 64;
 
 const readStoredUsers = (): StoredUser[] => {
   try {
@@ -1945,6 +1949,11 @@ function AccountControl({ currentUser, onLogin, onSignup, onLogout }: AccountCon
                 type="password"
                 className="h-11 rounded-[10px] border border-[#d9d9d9] px-3 font-['SF_Compact',system-ui,sans-serif] text-[15px] outline-none"
               />
+              {mode === "signup" && (
+                <p className="font-['SF_Compact',system-ui,sans-serif] text-[12px] text-[#858585] leading-[1.35]">
+                  Username must be {USERNAME_MIN_LENGTH}-{USERNAME_MAX_LENGTH} characters. Password must be {PASSWORD_MIN_LENGTH}-{PASSWORD_MAX_LENGTH} characters.
+                </p>
+              )}
               {message && (
                 <p className="font-['SF_Compact',system-ui,sans-serif] text-[12px] text-[#d32f2f]">
                   {message}
@@ -2049,8 +2058,12 @@ export default function App() {
 
   const handleSignup = async (username: string, password: string) => {
     const cleanedUsername = username.trim();
-    if (cleanedUsername.length < 2) return "Username must be at least 2 characters.";
-    if (password.length < 4) return "Password must be at least 4 characters.";
+    if (cleanedUsername.length < USERNAME_MIN_LENGTH || cleanedUsername.length > USERNAME_MAX_LENGTH) {
+      return `Username must be ${USERNAME_MIN_LENGTH}-${USERNAME_MAX_LENGTH} characters.`;
+    }
+    if (password.length < PASSWORD_MIN_LENGTH || password.length > PASSWORD_MAX_LENGTH) {
+      return `Password must be ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} characters.`;
+    }
     if (users.some(user => user.username.toLowerCase() === cleanedUsername.toLowerCase())) {
       return "That username already exists.";
     }
