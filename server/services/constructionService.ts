@@ -17,6 +17,10 @@ export interface ConstructionImpact {
   events: ConstructionEvent[];
 }
 
+interface LoadedConstructionEvent extends ConstructionEvent {
+  positions: Position[];
+}
+
 type Position = [number, number];
 
 interface GeoJsonFeature {
@@ -34,7 +38,7 @@ interface GeoJsonFeatureCollection {
   features: GeoJsonFeature[];
 }
 
-let cachedFeatures: ConstructionEvent[] | null = null;
+let cachedFeatures: LoadedConstructionEvent[] | null = null;
 
 const getDistanceKm = (
   lat1: number,
@@ -85,6 +89,15 @@ const getFeatureCenter = (feature: GeoJsonFeature) => {
   };
 };
 
+const getClosestDistanceKm = (lat: number, lng: number, positions: Position[]) => {
+  if (positions.length === 0) return Number.POSITIVE_INFINITY;
+
+  return positions.reduce((closest, [featureLng, featureLat]) => {
+    const distanceKm = getDistanceKm(lat, lng, featureLat, featureLng);
+    return Math.min(closest, distanceKm);
+  }, Number.POSITIVE_INFINITY);
+};
+
 const getPropertyText = (
   properties: Record<string, unknown> | undefined,
   names: string[],
@@ -115,8 +128,9 @@ const loadConstructionFeatures = () => {
 
   cachedFeatures = features
     .map((feature, index) => {
+      const positions = collectPositions(feature.geometry?.coordinates);
       const center = getFeatureCenter(feature);
-      if (!center) return null;
+      if (!center || positions.length === 0) return null;
 
       const title =
         getPropertyText(feature.properties, ["project", "title", "name", "street"]) ||
@@ -134,28 +148,40 @@ const loadConstructionFeatures = () => {
         distanceKm: 0,
         delayMin: 0,
         source: "geojson" as const,
+        positions,
       };
     })
-    .filter((event): event is ConstructionEvent => event !== null);
+    .filter((event): event is LoadedConstructionEvent => event !== null);
 
   return cachedFeatures;
 };
 
-const getDelayForDistance = (distanceKm: number) => {
-  if (distanceKm <= 0.25) return 3;
-  if (distanceKm <= 0.6) return 2;
-  if (distanceKm <= 1.2) return 1;
-  return 0;
+const getDelayForDistance = (distanceKm: number, title: string, description: string) => {
+  const text = `${title} ${description}`.toLowerCase();
+  const majorWork =
+    /closure|closed|reconstruction|rehabilitation|watermain|bridge|track|streetcar/.test(text);
+  const lightWork = /planning|planned|design|study|minor|sidewalk/.test(text);
+  let delay = 0;
+
+  if (distanceKm <= 0.18) delay = 3;
+  else if (distanceKm <= 0.45) delay = 2;
+  else if (distanceKm <= 0.9) delay = 1;
+
+  if (delay > 0 && majorWork) delay += 1;
+  if (delay > 0 && lightWork) delay -= 1;
+
+  return Math.max(0, Math.min(4, delay));
 };
 
 export function getConstructionImpact(lat: number, lng: number): ConstructionImpact {
   const events = loadConstructionFeatures()
     .map((event) => {
-      const distanceKm = getDistanceKm(lat, lng, event.lat, event.lng);
+      const distanceKm = getClosestDistanceKm(lat, lng, event.positions);
+      const { positions: _positions, ...publicEvent } = event;
       return {
-        ...event,
+        ...publicEvent,
         distanceKm,
-        delayMin: getDelayForDistance(distanceKm),
+        delayMin: getDelayForDistance(distanceKm, event.title, event.description),
       };
     })
     .filter((event) => event.delayMin > 0)

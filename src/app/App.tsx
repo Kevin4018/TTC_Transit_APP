@@ -944,6 +944,7 @@ function MapScreen({ stopId, showControls, mapCenter, userPos, locationStatus, o
   const constructionDelay = unifiedDelays.construction?.value ?? prediction?.offsets.construction;
   const eventDelay = unifiedDelays.events?.value ?? prediction?.offsets.events ?? 0;
   const holidayDelay = unifiedDelays.holidays?.value ?? prediction?.offsets.holidays ?? 0;
+  const otherDelay = (prediction?.offsets.other ?? 0) + (accidentDelay ?? 0);
   const displayedPrediction = prediction && weatherDelay !== undefined
     ? (() => {
       const offsets: Prediction["offsets"] = {
@@ -951,10 +952,11 @@ function MapScreen({ stopId, showControls, mapCenter, userPos, locationStatus, o
         schedule: prediction.etaMin,
         weather: weatherDelay,
         traffic: trafficDelay ?? prediction.offsets.traffic,
-        accidents: accidentDelay ?? prediction.offsets.accidents,
+        accidents: 0,
         construction: constructionDelay ?? prediction.offsets.construction,
         events: eventDelay,
         holidays: holidayDelay,
+        other: otherDelay,
       };
 
       return {
@@ -1075,18 +1077,13 @@ function MapScreen({ stopId, showControls, mapCenter, userPos, locationStatus, o
                 </div>
                 <div className="grid grid-cols-3 mb-3">
                   <OffsetItem icon={<BusIcon />}          value={displayedPrediction.offsets.schedule}     label="schedule" />
-                  <OffsetItem icon={<CloudIcon />}         value={displayedPrediction.offsets.weather}      label="weather" />
                   <OffsetItem icon={<TrafficIcon />}       value={displayedPrediction.offsets.traffic}      label="traffic" />
-                </div>
-                <div className="grid grid-cols-3 mb-3">
-                  <OffsetItem icon={<WalkIcon />}          value={displayedPrediction.offsets.accidents}    label="accidents" />
                   <OffsetItem icon={<ConstructionIcon />}  value={displayedPrediction.offsets.construction} label="construction" />
-                  <OffsetItem icon={<StarIcon />}           value={displayedPrediction.offsets.events ?? 0}  label="events" />
                 </div>
                 <div className="grid grid-cols-3 mb-3">
-                  <OffsetItem icon={<StarIcon />}           value={displayedPrediction.offsets.holidays ?? 0} label="holiday" />
+                  <OffsetItem icon={<StarIcon />}           value={displayedPrediction.offsets.events ?? 0}  label="events" />
+                  <OffsetItem icon={<StarIcon />}           value={holidayDelay}                             label="holiday" />
                   <OffsetItem icon={<StarIcon />}           value={displayedPrediction.offsets.other}         label="other" />
-                  <div aria-hidden="true" />
                 </div>
                 <button
                   onClick={() => selectedRoute !== null && dir !== null && onOpenReport(selectedRoute, dir)}
@@ -1152,10 +1149,33 @@ function BusReport({ route, dir, stopId, mapCenter, onClose }: BusReportProps) {
 
         if (unifiedDelays.weather) nextReport.factors.weather = unifiedDelays.weather;
         if (unifiedDelays.traffic) nextReport.factors.traffic = unifiedDelays.traffic;
-        if (unifiedDelays.accidents) nextReport.factors.accidents = unifiedDelays.accidents;
         if (unifiedDelays.construction) nextReport.factors.construction = unifiedDelays.construction;
         if (unifiedDelays.events) nextReport.factors.events = unifiedDelays.events;
         if (unifiedDelays.holidays) nextReport.factors.holidays = unifiedDelays.holidays;
+
+        const existingOther = nextReport.factors.other ?? {
+          value: 0,
+          description: "No additional live service alerts are connected for this route yet.",
+        };
+        const mergedOtherFactors = [
+          existingOther.value !== 0 ? existingOther.description : "",
+          unifiedDelays.accidents && unifiedDelays.accidents.value !== 0 ? unifiedDelays.accidents.description : "",
+        ].filter(Boolean);
+
+        nextReport.factors.other = {
+          value: existingOther.value + (unifiedDelays.accidents?.value ?? 0),
+          description: mergedOtherFactors.length > 0
+            ? mergedOtherFactors.join(" ")
+            : existingOther.description,
+        };
+        nextReport.factors.accidents = {
+          value: 0,
+          description: "Accident impact is included in other when present.",
+        };
+        nextReport.factors.holidays = {
+          value: 0,
+          description: "Holiday impact is included in other when present.",
+        };
 
         nextReport.etaMin = Math.max(0, sumFactorValues(nextReport.factors));
         nextReport.confidence = estimateConfidenceFromFactors(nextReport.factors);
@@ -1216,7 +1236,9 @@ function BusReport({ route, dir, stopId, mapCenter, onClose }: BusReportProps) {
                 <Skeleton className="h-10 flex-1" />
               </div>
             ))
-            : (Object.entries(data.factors) as [string, { value: number; description: string }][]).map(([key, f]) => (
+            : (Object.entries(data.factors) as [string, { value: number; description: string }][])
+              .filter(([key]) => key !== "weather" && key !== "accidents")
+              .map(([key, f]) => (
               <div key={key} className="flex items-start gap-4">
                 <div className="flex flex-col items-center gap-0.5 w-[64px] shrink-0">
                   <span className="font-['Rowdies',sans-serif] text-[28px] leading-none text-[#7d7b7b]">{fmt(f.value)}</span>

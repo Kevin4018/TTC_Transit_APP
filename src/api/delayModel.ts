@@ -123,7 +123,10 @@ function describeWeatherDelay(
   const base = `WeatherAPI reports ${weather.condition.toLowerCase()}, ${weather.temperatureC} C, wind ${weather.windKph} km/h.`;
 
   if (delay === 0) {
-    return `${base} No meaningful weather delay is expected for this ${mode} trip.`;
+    const reasonText = severity.reasons.length > 0
+      ? ` It is considered as a multiplier for road traffic, construction, and event delays.`
+      : "";
+    return `${base} No standalone weather delay is added for this ${mode} trip.${reasonText}`;
   }
 
   const reasonText = severity.reasons.length > 0
@@ -199,9 +202,7 @@ export function estimateUnifiedDelays(input: UnifiedDelayInput): UnifiedDelayRes
   const mode = input.mode ?? inferTransitMode(input.routeId);
   const weatherSeverity = input.weather ? estimateWeatherSeverity(input.weather) : null;
   const modeWeatherMultiplier = getModeWeatherMultiplier(mode);
-  const weatherDelay = weatherSeverity
-    ? clamp(Math.round(weatherSeverity.score * modeWeatherMultiplier), 0, mode === "subway" ? 2 : 6)
-    : undefined;
+  const weatherDelay = weatherSeverity ? 0 : undefined;
 
   const baseTrafficDelay = input.trafficImpact?.trafficDelayMin ?? 0;
   const baseAccidentDelay = input.trafficImpact?.accidentDelayMin ?? 0;
@@ -226,7 +227,6 @@ export function estimateUnifiedDelays(input: UnifiedDelayInput): UnifiedDelayRes
 
   const result: UnifiedDelayResult = {
     confidenceAdjustment: -(
-      (weatherDelay ?? 0) +
       trafficWeatherBoost +
       constructionWeatherBoost +
       eventWeatherBoost
