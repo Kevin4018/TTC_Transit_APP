@@ -255,13 +255,20 @@ export async function getEventImpact(
   const targetTime = parseTargetDate(at);
 
   if (process.env.TICKETMASTER_API_KEY) {
-    const events = await requestTicketmasterEvents(lat, lng, targetTime);
+    try {
+      const events = await requestTicketmasterEvents(lat, lng, targetTime);
 
-    return {
-      source: "ticketmaster",
-      eventDelayMin: Math.min(6, events.reduce((max, event) => Math.max(max, event.delayMin), 0)),
-      events,
-    };
+      return {
+        source: "ticketmaster",
+        eventDelayMin: Math.min(6, events.reduce((max, event) => Math.max(max, event.delayMin), 0)),
+        events,
+      };
+    } catch (error) {
+      console.warn(
+        "Ticketmaster event lookup failed; using local event fallback.",
+        error instanceof Error ? error.message : error,
+      );
+    }
   }
 
   const events = getMockEvents(lat, lng, targetTime);

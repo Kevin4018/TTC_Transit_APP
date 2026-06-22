@@ -28,6 +28,7 @@ interface NagerHoliday {
 
 const NAGER_API_BASE_URL = "https://date.nager.at/api/v3/PublicHolidays";
 const TORONTO_TIME_ZONE = "America/Toronto";
+const holidayCache = new Map<number, Holiday[]>();
 
 const ONTARIO_FALLBACK_HOLIDAYS: Record<string, { name: string; localName?: string; greeting?: string }> = {
   "01-01": { name: "New Year's Day", greeting: "Happy New Year" },
@@ -112,6 +113,9 @@ const getMockHolidays = (targetTime: Date): Holiday[] => {
 };
 
 const requestNagerHolidays = async (year: number): Promise<Holiday[]> => {
+  const cached = holidayCache.get(year);
+  if (cached) return cached;
+
   const response = await fetch(`${NAGER_API_BASE_URL}/${year}/CA`);
   const data = await response.json() as NagerHoliday[];
 
@@ -119,7 +123,7 @@ const requestNagerHolidays = async (year: number): Promise<Holiday[]> => {
     throw new Error(`Holiday API request failed with status ${response.status}`);
   }
 
-  return data
+  const holidays = data
     .filter(isOntarioHoliday)
     .map((holiday) => ({
       id: `nager-${holiday.date}-${holiday.name}`,
@@ -129,6 +133,9 @@ const requestNagerHolidays = async (year: number): Promise<Holiday[]> => {
       types: holiday.types,
       source: "nager" as const,
     }));
+
+  holidayCache.set(year, holidays);
+  return holidays;
 };
 
 export async function getHolidayImpact(at?: string): Promise<HolidayImpact> {
@@ -141,7 +148,11 @@ export async function getHolidayImpact(at?: string): Promise<HolidayImpact> {
 
   try {
     holidays = (await requestNagerHolidays(year)).filter(holiday => holiday.date === targetKey);
-  } catch {
+  } catch (error) {
+    console.warn(
+      "Nager holiday lookup failed; using local holiday fallback.",
+      error instanceof Error ? error.message : error,
+    );
     source = "mock";
     holidays = getMockHolidays(targetTime);
   }
