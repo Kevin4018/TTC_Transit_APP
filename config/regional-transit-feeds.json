@@ -17,14 +17,16 @@
     {
       "id": "miway",
       "name": "MiWay",
-      "localPath": "./vendor/regional-transit/miway/miway.gtfs.zip",
+      "databasePath": "./data/regional-transit.sqlite",
+      "databaseFileId": "miway-schedule",
       "enabled": true,
       "filename": "miway.gtfs.zip"
     },
     {
       "id": "yrt-viva",
       "name": "YRT / Viva",
-      "localPath": "./vendor/regional-transit/yrt-viva/yrt-viva.gtfs.zip",
+      "databasePath": "./data/regional-transit.sqlite",
+      "databaseFileId": "yrt-viva-schedule",
       "enabled": true,
       "filename": "yrt-viva.gtfs.zip"
     },

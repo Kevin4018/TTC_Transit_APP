@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import Database from "better-sqlite3";
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -10,6 +11,8 @@ type FeedConfig = {
   name?: string;
   url?: string;
   localPath?: string;
+  databasePath?: string;
+  databaseFileId?: string;
   enabled?: boolean;
   filename?: string;
 };
@@ -82,8 +85,8 @@ const readFeeds = (): FeedConfig[] => {
     }
 
     const candidate = feed as Partial<FeedConfig>;
-    if (!candidate.id || (!candidate.url && !candidate.localPath)) {
-      throw new Error("Each regional transit feed entry needs id and either url or localPath.");
+    if (!candidate.id || (!candidate.url && !candidate.localPath && !candidate.databaseFileId)) {
+      throw new Error("Each regional transit feed entry needs id and one of url, localPath, or databaseFileId.");
     }
 
     return {
@@ -91,6 +94,8 @@ const readFeeds = (): FeedConfig[] => {
       id: sanitizeId(candidate.id),
       url: candidate.url?.trim(),
       localPath: candidate.localPath?.trim(),
+      databasePath: candidate.databasePath?.trim(),
+      databaseFileId: candidate.databaseFileId?.trim(),
     };
   });
 };
@@ -134,11 +139,51 @@ const copyLocalFeed = async (feed: FeedConfig, destination: string) => {
   return true;
 };
 
+const copyDatabaseFeed = (feed: FeedConfig, destination: string) => {
+  if (!feed.databaseFileId) return false;
+
+  const databasePath = path.resolve(feed.databasePath ?? "./data/regional-transit.sqlite");
+  if (!existsSync(databasePath)) {
+    throw new Error(`Regional transit database is missing for ${feed.id}: ${databasePath}`);
+  }
+
+  console.log(`Using database ${feed.name ?? feed.id}`);
+  console.log(`  ${databasePath}#${feed.databaseFileId}`);
+  console.log(`  -> ${destination}`);
+
+  const db = new Database(databasePath, { readonly: true, fileMustExist: true });
+  try {
+    const row = db
+      .prepare(
+        `
+          SELECT content
+          FROM regional_transit_files
+          WHERE id = ?
+        `,
+      )
+      .get(feed.databaseFileId) as { content?: Buffer } | undefined;
+
+    if (!row?.content) {
+      throw new Error(`Regional transit database file is missing: ${feed.databaseFileId}`);
+    }
+
+    writeFileSync(destination, row.content);
+  } finally {
+    db.close();
+  }
+
+  return true;
+};
+
 const downloadFile = async (feed: FeedConfig) => {
   const filename = feed.filename ?? `${feed.id}.gtfs.zip`;
   const destination = path.resolve(outputDir, filename);
 
   ensureDir(outputDir);
+
+  if (copyDatabaseFeed(feed, destination)) {
+    return;
+  }
 
   if (await copyLocalFeed(feed, destination)) {
     return;
@@ -174,7 +219,7 @@ if (feeds.length === 0) {
 console.log(`Writing regional transit feeds to ${outputDir}`);
 for (const feed of feeds) {
   if (dryRun) {
-    console.log(`Would use ${feed.name ?? feed.id}: ${feed.localPath ?? feed.url}`);
+    console.log(`Would use ${feed.name ?? feed.id}: ${feed.databaseFileId ?? feed.localPath ?? feed.url}`);
   } else {
     await downloadFile(feed);
   }

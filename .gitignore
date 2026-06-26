@@ -2,6 +2,7 @@ node_modules/
 dist/
 data/*
 !data/gtfs-slim.sqlite
+!data/regional-transit.sqlite
 !data/construction/
 !data/construction/Road-reconstruction-program.geojson
 !data/otp/
