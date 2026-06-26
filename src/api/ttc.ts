@@ -115,6 +115,7 @@ export interface NavigationRoute {
   totalStops: number;
   alsoAt: string[];
   legs?: NavigationLeg[];
+  alternatives?: NavigationRoute[];
 }
 
 export type NavigationMode = "bus" | "car" | "walk" | "bike";
@@ -307,12 +308,12 @@ function applyResponsePresentation(input: string, answer: TransitAssistantAnswer
 
 function localizedCapabilityText(language: ResponseLanguage): string {
   if (language === "zh") {
-    return "我可以帮你查询 TTC 到站时间、附近站点、路线延误、交通、天气、活动、节假日和导航。";
+    return "我可以帮你查询 TTC 到站时间、附近站点、路线延误、交通、天气、活动、节假日，以及 Toronto/GTA 的跨区域公交路线和按出发时间规划行程。";
   }
   if (language === "fr") {
-    return "Je peux vous aider avec les arrivées TTC, les arrêts proches, les retards, la circulation, la météo, les événements, les jours fériés et la navigation.";
+    return "Je peux vous aider avec les arrivées TTC, les arrêts proches, les retards, la circulation, la météo, les événements, les jours fériés et les trajets en transport dans Toronto et la région du Grand Toronto selon l'heure de départ.";
   }
-  return "I can help with TTC trip questions like arrival times, nearby stops, route delays, traffic, weather, events, holidays, and navigation.";
+  return "I can help with TTC arrivals, nearby stops, delays, traffic, weather, events, holidays, and Toronto/GTA transit trip planning with departure-time choices.";
 }
 
 function localizedTryAgain(language: ResponseLanguage): string {
@@ -530,10 +531,27 @@ function isNo(input: string): boolean {
 function extractDestinationQuery(input: string): string | undefined {
   const cleaned = input.trim().replace(/[?.!]+$/, "");
   const patterns = [
+    /(?:从.+?(?:到|去|前往)|我要(?:到|去)|我想(?:到|去)|帮我(?:到|去|导航到)|怎么(?:到|去)|如何(?:到|去)|导航(?:到|去)|路线(?:到|去)|前往|去|到)\s*([^，。！？?]+)$/i,
     /\b(?:i\s+(?:want|need|would\s+like)\s+to\s+(?:go|travel|get)\s+to|can\s+you\s+(?:take|get|route|navigate)\s+me\s+to|take\s+me\s+to|get\s+me\s+to|route\s+me\s+to|navigate\s+me\s+to|go\s+to|travel\s+to|head\s+to|visit)\s+(.+)$/i,
+    /\bfrom\s+.+?\s+to\s+(.+)$/i,
     /\b(?:i\s+(?:want|need|would\s+like)\s+to\s+)?(?:plan|schedule|map)\s+(?:me\s+)?(?:a\s+)?(?:ttc\s+|transit\s+)?trip\b.{0,80}?\bto\s+(.+)$/i,
     /\b(?:how\s+(?:do|can|should)\s+i\s+(?:get|go|travel)\s+to|how\s+to\s+(?:get|go|travel)\s+to|directions?\s+to|navigate\s+to|route\s+to|trip\s+to|transit\s+to|plan\s+(?:me\s+)?(?:a\s+)?trip\s+to)\s+(.+)$/i,
     /\b(?:what(?:'s|\s+is)?\s+the\s+(?:best\s+)?(?:route|way|trip)\s+to|give\s+me\s+(?:a\s+)?(?:route|trip|directions?)\s+to)\s+(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+    if (match?.[1]) return cleanDestinationQuery(match[1]);
+  }
+
+  return undefined;
+}
+
+function extractOriginQuery(input: string): string | undefined {
+  const cleaned = input.trim().replace(/[?.!]+$/, "");
+  const patterns = [
+    /(?:从|由)\s*([^，。！？?]+?)\s*(?:到|去|前往)/i,
+    /\bfrom\s+(.+?)\s+to\s+.+$/i,
   ];
 
   for (const pattern of patterns) {
@@ -552,6 +570,10 @@ function cleanDestinationQuery(input: string): string {
     .replace(/\b(?:today|tomorrow|tonight|this evening|later)\b/gi, " ")
     .replace(/\b(?:at|around|by|before|after)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi, " ")
     .replace(/\b(?:in\s+)?(?:another\s+)?(?:\d+|one|two|three|four|five|six)\s+(?:more\s+)?(?:minute|minutes|hour|hours)(?:\s+later|\s+from\s+now)?\b/gi, " ")
+    .replace(/(?:今天|明天|今晚|晚上|早上|上午|中午|下午|稍后|等下|之后|以后)/g, " ")
+    .replace(/(?:大概|大约|约)?\s*\d{1,2}(?:点|:)\d{0,2}(?:分)?(?:左右|前|后)?/g, " ")
+    .replace(/(?:\d+|一|二|两|三|四|五|六)\s*(?:分钟|小时)(?:后|之后|以后)/g, " ")
+    .replace(/(?:出发|离开|走|到达)$/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -560,7 +582,8 @@ function cleanDestinationQuery(input: string): string {
 
 function isNavigationQuestion(input: string): boolean {
   return extractDestinationQuery(input) !== undefined ||
-    /\b(?:navigate|navigation|directions?|route\s+me|take\s+me|get\s+me|go\s+to|get\s+to|travel\s+to|trip\s+to|plan|schedule|map)\b.*\b(?:trip|to|there|destination)\b/i.test(input);
+    /\b(?:navigate|navigation|directions?|route\s+me|take\s+me|get\s+me|go\s+to|get\s+to|travel\s+to|transit\s+to|trip\s+to|plan|schedule|map)\b.*\b(?:trip|to|there|destination|union|station)\b/i.test(input) ||
+    /(?:导航|路线|怎么去|怎么到|如何去|如何到|前往|从.+到|从.+去|去.+怎么走|到.+怎么走|出行方式|公交怎么走|坐车去)/i.test(input);
 }
 
 function isBareDestinationCandidate(input: string): boolean {
@@ -570,7 +593,7 @@ function isBareDestinationCandidate(input: string): boolean {
   if (isWeatherQuestion(cleaned) || isTrafficQuestion(cleaned) || isDelayQuestion(cleaned) || isCrowdingQuestion(cleaned)) return false;
   if (isLocationQuestion(cleaned) || isRouteTerminalQuestion(cleaned) || isTransitArrivalRequest(cleaned)) return false;
 
-  return /[a-z]/i.test(cleaned);
+  return /[a-z\u4e00-\u9fff]/i.test(cleaned);
 }
 
 function isAddressLikeDestination(input: string): boolean {
@@ -704,6 +727,7 @@ async function answerStopContextQuestion(
 
 function isDestinationFollowUp(input: string): boolean {
   return /\b(?:how\s+about|what\s+about|that\s+trip|the\s+trip|same\s+destination|there|destination|arrival|arrive|walk|ride|stops|directions?|navigate|miss|missed|leave|leaving|depart|departure|when\s+should\s+i|how\s+long|next\s+(?:one|bus|vehicle|streetcar)|another\s+(?:one|bus|vehicle|streetcar)|more\s+options?|other\s+options?|any\s+other|alternatives?|alternate\s+(?:routes?|ways?)|other\s+ways?|different\s+routes?|what\s+else|something\s+else|choices?)\b/i.test(input) ||
+    /(?:这趟|同一个目的地|那里|目的地|到达|步行|坐几站|导航|路线|赶不上|错过|出发|离开|几点|多久|下一班|下一趟|另一个|其他选择|别的选择|更多选择|不同路线|换一条|还有吗|还有别的吗|备选)/i.test(input) ||
     isTimeFollowUp(input);
 }
 
@@ -720,7 +744,8 @@ function hasAssistantContext(context: TransitAssistantContext): boolean {
 }
 
 function isGenericFollowUp(input: string): boolean {
-  return /\b(?:what\s+about|how\s+about|and\s+(?:now|then|later|there|that|this)|also|then|later|now|today|tomorrow|tonight|this evening|same|again|that|this|it|there|those|them|why|how\s+(?:long|late|far|bad|busy)|when|where|which|should\s+i|can\s+i|do\s+i|is\s+(?:it|that|there)|are\s+(?:there|they)|does\s+(?:it|that)|more\s+options?|other\s+options?|any\s+other|alternatives?|what\s+else|something\s+else|miss|missed|next\s+(?:one|bus|vehicle|streetcar))\b/i.test(input);
+  return /\b(?:what\s+about|how\s+about|and\s+(?:now|then|later|there|that|this)|also|then|later|now|today|tomorrow|tonight|this evening|same|again|that|this|it|there|those|them|why|how\s+(?:long|late|far|bad|busy)|when|where|which|should\s+i|can\s+i|do\s+i|is\s+(?:it|that|there)|are\s+(?:there|they)|does\s+(?:it|that)|more\s+options?|other\s+options?|any\s+other|alternatives?|what\s+else|something\s+else|miss|missed|next\s+(?:one|bus|vehicle|streetcar))\b/i.test(input) ||
+    /(?:那|这个|那个|同样|再来|现在|今天|明天|今晚|晚上|稍后|等下|为什么|多久|多远|几点|哪里|哪个|还有|其他|别的|更多选择|换一个|下一班|下一趟|错过|赶不上)/i.test(input);
 }
 
 function isUpcomingQuestion(input: string): boolean {
@@ -767,11 +792,13 @@ function isCurrentTimeQuestion(input: string): boolean {
 }
 
 function isNextVehicleFollowUp(input: string): boolean {
-  return /\b(?:miss|missed|next\s+(?:one|bus|vehicle|streetcar)|another\s+(?:one|bus|vehicle|streetcar))\b/i.test(input);
+  return /\b(?:miss|missed|next\s+(?:one|bus|vehicle|streetcar)|another\s+(?:one|bus|vehicle|streetcar))\b/i.test(input) ||
+    /(?:错过|赶不上|下一班|下一趟|另一班|另一趟)/i.test(input);
 }
 
 function isOptionsFollowUp(input: string): boolean {
-  return /\b(?:more\s+options?|other\s+options?|any\s+other|alternatives?|alternate\s+(?:routes?|ways?)|other\s+ways?|different\s+routes?|what\s+else|something\s+else|choices?)\b/i.test(input);
+  return /\b(?:more\s+options?|other\s+options?|any\s+other|alternatives?|alternate\s+(?:routes?|ways?)|other\s+ways?|different\s+routes?|what\s+else|something\s+else|choices?)\b/i.test(input) ||
+    /(?:其他选择|别的选择|更多选择|不同路线|换一条|还有吗|还有别的吗|备选|其他路线|别的路线)/i.test(input);
 }
 
 function isWeatherQuestion(input: string): boolean {
@@ -987,10 +1014,10 @@ function answerGreeting(input: string, context: TransitAssistantContext): Transi
   }
 
   const helpText = language === "zh"
-    ? "我可以帮你查询 TTC 到站时间、附近站点、延误、交通、天气、活动、节假日和路线导航。"
+    ? "我可以帮你查询 TTC 到站时间、附近站点、延误、交通、天气、活动、节假日，以及 Toronto/GTA 的跨区域公交路线和按出发时间规划行程。"
     : language === "fr"
-      ? "Je peux vous aider avec les arrivées TTC, les arrêts proches, les retards, la circulation, la météo, les événements, les jours fériés et la navigation."
-      : "I can help with TTC arrivals, nearby stops, delays, traffic, weather, events, holidays, and navigation.";
+      ? "Je peux vous aider avec les arrivées TTC, les arrêts proches, les retards, la circulation, la météo, les événements, les jours fériés et les trajets en transport dans Toronto et la région du Grand Toronto selon l'heure de départ."
+      : "I can help with TTC arrivals, nearby stops, delays, traffic, weather, events, holidays, and Toronto/GTA transit trip planning with departure-time choices.";
 
   return {
     matchedIntent: "help",
@@ -1018,11 +1045,13 @@ function isRouteTerminalQuestion(input: string): boolean {
 }
 
 function isTimeFollowUp(input: string): boolean {
-  return /\b(?:what\s+about|how\s+about|tomorrow|tonight|this evening|later|then|(?:in\s+)?(?:another\s+)?(?:\d+|one|two|three|four|five|six)\s+(?:more\s+)?(?:minute|minutes|hour|hours)(?:\s+later|\s+from\s+now)?|(?:at|around)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i.test(input);
+  return /\b(?:what\s+about|how\s+about|tomorrow|tonight|this evening|later|then|(?:in\s+)?(?:another\s+)?(?:\d+|one|two|three|four|five|six)\s+(?:more\s+)?(?:minute|minutes|hour|hours)(?:\s+later|\s+from\s+now)?|(?:at|around)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i.test(input) ||
+    /(?:明天|今晚|晚上|早上|上午|中午|下午|稍后|等下|之后|以后|出发时间|几点出发|(?:\d+|一|二|两|三|四|五|六)\s*(?:分钟|小时)(?:后|之后|以后)|\d{1,2}(?:点|:)\d{0,2}(?:分)?)/i.test(input);
 }
 
 function isChainedTimeFollowUp(input: string): boolean {
-  return /\b(?:another|more|after\s+that|afterward|afterwards|from\s+then|from\s+that|later\s+than\s+that|again)\b/i.test(input);
+  return /\b(?:another|more|after\s+that|afterward|afterwards|from\s+then|from\s+that|later\s+than\s+that|again)\b/i.test(input) ||
+    /(?:再|再晚|之后|以后|下一趟|下一班|晚一点)/i.test(input);
 }
 
 function getLastTargetTime(context: TransitAssistantContext): Date | undefined {
@@ -1056,6 +1085,24 @@ function parseAssistantTargetTime(input: string, baseTime = new Date()): Date | 
     return new Date(baseTime.getTime() + milliseconds);
   }
 
+  const zhNumbers: Record<string, number> = {
+    一: 1,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+  };
+  const zhRelative = input.match(/(\d+|一|二|两|三|四|五|六)\s*(分钟|小时)(?:后|之后|以后)/);
+  if (zhRelative) {
+    const amount = zhNumbers[zhRelative[1]] ?? Number(zhRelative[1]);
+    const milliseconds = zhRelative[2] === "小时"
+      ? amount * 60 * 60 * 1000
+      : amount * 60 * 1000;
+    return new Date(baseTime.getTime() + milliseconds);
+  }
+
   const explicitTime = text.match(/\b(?:at|around|by|before|after)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
   if (explicitTime) {
     let hour = Number(explicitTime[1]);
@@ -1073,14 +1120,33 @@ function parseAssistantTargetTime(input: string, baseTime = new Date()): Date | 
     return target;
   }
 
-  if (/\btomorrow\b/.test(text)) {
+  const zhExplicitTime = input.match(/(?:(明天|今天|今晚)?\s*)?(?:(早上|上午|中午|下午|晚上|今晚)\s*)?(\d{1,2})(?:点|:)(?:(\d{1,2})分?)?(?:左右|前|后)?/);
+  if (zhExplicitTime) {
+    const dayWord = zhExplicitTime[1] ?? "";
+    const period = zhExplicitTime[2] ?? "";
+    let hour = Number(zhExplicitTime[3]);
+    const minute = Number(zhExplicitTime[4] ?? 0);
+
+    if ((period === "下午" || period === "晚上" || period === "今晚") && hour < 12) hour += 12;
+    if (period === "中午" && hour < 11) hour += 12;
+    if ((period === "早上" || period === "上午") && hour === 12) hour = 0;
+    if (!period && hour >= 1 && hour <= 7) hour += 12;
+
+    const target = new Date(baseTime);
+    if (dayWord === "明天") target.setDate(target.getDate() + 1);
+    target.setHours(hour, minute, 0, 0);
+    if (dayWord !== "明天" && target.getTime() <= baseTime.getTime()) target.setDate(target.getDate() + 1);
+    return target;
+  }
+
+  if (/\btomorrow\b/.test(text) || /明天/.test(input)) {
     const target = new Date(baseTime);
     target.setDate(target.getDate() + 1);
     target.setHours(9, 0, 0, 0);
     return target;
   }
 
-  if (/\btonight\b|\bthis evening\b/.test(text)) {
+  if (/\btonight\b|\bthis evening\b/.test(text) || /今晚|晚上/.test(input)) {
     const target = new Date(baseTime);
     target.setHours(20, 0, 0, 0);
     if (target.getTime() <= baseTime.getTime()) target.setDate(target.getDate() + 1);
@@ -1147,10 +1213,40 @@ function parseRelativeTargetOffsetMinutes(input: string): number | undefined {
     six: 6,
   };
 
-  if (!relative) return undefined;
+  if (!relative) {
+    const zhNumbers: Record<string, number> = {
+      一: 1,
+      二: 2,
+      两: 2,
+      三: 3,
+      四: 4,
+      五: 5,
+      六: 6,
+    };
+    const zhRelative = input.match(/(\d+|一|二|两|三|四|五|六)\s*(分钟|小时)(?:后|之后|以后)/);
+    if (!zhRelative) return undefined;
+    const amount = zhNumbers[zhRelative[1]] ?? Number(zhRelative[1]);
+    return zhRelative[2] === "小时" ? amount * 60 : amount;
+  }
 
   const amount = wordNumbers[relative[1]] ?? Number(relative[1]);
   return relative[2].startsWith("hour") ? amount * 60 : amount;
+}
+
+function getNavigationDepartureTarget(input: string, context: TransitAssistantContext): Date | undefined {
+  return parseAssistantTargetTime(input, getTimeBase(input, context));
+}
+
+function formatAssistantDepartureTarget(target: Date, language: ResponseLanguage): string {
+  const weekday = target.toLocaleDateString("en-CA", {
+    timeZone: "America/Toronto",
+    weekday: "short",
+  });
+  const time = formatTransitTime(target);
+
+  if (language === "zh") return `${weekday} ${time} 出发`;
+  if (language === "fr") return `départ ${weekday} ${time}`;
+  return `leaving ${weekday} ${time}`;
 }
 
 function parseTransitClockMinutes(time: string): number | undefined {
@@ -1184,6 +1280,7 @@ function calculateDestinationTiming(
   input: string,
   route: NavigationRoute,
   context: TransitAssistantContext,
+  plannedDepartureTarget?: Date,
 ): { etaMin: number; arrivalTime: string; timingNote?: string; targetTime?: Date } {
   if (isNextVehicleFollowUp(input)) {
     const nextVehicleGap = route.alsoAt
@@ -1198,6 +1295,15 @@ function calculateDestinationTiming(
         ? formatTransitClockMinutes(currentArrival + nextVehicleGap)
         : route.arrivalTime,
       timingNote: `If you miss that vehicle, the next one is about ${nextVehicleGap} min later,`,
+    };
+  }
+
+  if (plannedDepartureTarget) {
+    return {
+      etaMin: route.etaMin,
+      arrivalTime: route.arrivalTime,
+      timingNote: `Using ${formatAssistantDepartureTarget(plannedDepartureTarget, "en")},`,
+      targetTime: plannedDepartureTarget,
     };
   }
 
@@ -1260,45 +1366,77 @@ function buildDestinationOptionsAnswer(
 
   const baseEta = context.navigationEtaMin ?? route.etaMin;
   const baseArrival = parseTransitClockMinutes(context.navigationArrivalTime ?? route.arrivalTime);
-  const optionGaps = [0, ...route.alsoAt.map(parseDurationMinutes)]
-    .filter((minutes): minutes is number => minutes !== undefined)
-    .filter((minutes, index, all) => all.indexOf(minutes) === index)
+  const routeChoices = [route, ...(route.alternatives ?? [])]
+    .filter(candidate => candidate.available !== false)
     .slice(0, 4);
+  const options = routeChoices.length > 1
+    ? routeChoices.map((candidate, index) => {
+      const label = language === "zh" ? `方案 ${index + 1}` : language === "fr" ? `option ${index + 1}` : `option ${index + 1}`;
+      return `${label}: ${summarizeNavigationRoute(candidate, language)}`;
+    })
+    : [0, ...route.alsoAt.map(parseDurationMinutes)]
+      .filter((minutes): minutes is number => minutes !== undefined)
+      .filter((minutes, index, all) => all.indexOf(minutes) === index)
+      .slice(0, 4)
+      .map((gap) => {
+        const eta = baseEta + gap;
+        const arrival = baseArrival !== undefined
+          ? formatTransitClockMinutes(baseArrival + gap)
+          : route.arrivalTime;
 
-  const options = optionGaps.map((gap) => {
-    const eta = baseEta + gap;
-    const arrival = baseArrival !== undefined
-      ? formatTransitClockMinutes(baseArrival + gap)
-      : route.arrivalTime;
-
-    if (language === "zh") return `约 ${eta} 分钟，到达 ${arrival}`;
-    if (language === "fr") return `environ ${eta} min, arrivée ${arrival}`;
-    return `about ${eta} min, arriving ${arrival}`;
-  });
+        if (language === "zh") return `约 ${eta} 分钟，到达 ${arrival}`;
+        if (language === "fr") return `environ ${eta} min, arrivée ${arrival}`;
+        return `about ${eta} min, arriving ${arrival}`;
+      });
 
   const stopName = route.busStop.replace(/[.]+$/, "");
-  const transport = route.routeLabel.match(/^\d+/) ? "TTC transit" : "transit";
+  const transport = localizedTransitVehicle(language);
+  const majorLegs = route.legs
+    ?.filter(leg => leg.mode !== "WALK")
+    .slice(0, 4)
+    .map(leg => [formatLegMode(leg.mode, language), leg.routeLabel, leg.headsign ? (language === "zh" ? `往 ${leg.headsign}` : language === "fr" ? `vers ${leg.headsign}` : `toward ${leg.headsign}`) : ""].filter(Boolean).join(" "))
+    .join(language === "zh" ? " → " : " -> ");
+  const routeSummary = majorLegs || `${transport} ${route.routeLabel}`;
 
   return {
     etaMin: baseEta,
     arrivalTime: baseArrival !== undefined ? formatTransitClockMinutes(baseArrival) : route.arrivalTime,
     text: language === "zh"
       ? [
-        `可以。去 ${route.destName}，你可以继续从 ${stopName} 搭乘 ${transport} ${route.routeLabel}。`,
+        `可以。去 ${route.destName}，主要路线是 ${routeSummary}。`,
         `接下来的选择：${options.join("；")}。`,
         `都需要先步行 ${route.walkMin} 分钟到站，然后乘坐 ${route.totalStops} 站。`,
       ].join("\n")
       : language === "fr"
         ? [
-          `Oui. Pour aller à ${route.destName}, vous pouvez continuer avec ${transport} ${route.routeLabel} depuis ${stopName}.`,
+          `Oui. Pour aller à ${route.destName}, l'option principale est ${routeSummary} depuis ${stopName}.`,
           `Options à venir : ${options.join("; ")}.`,
           `Chaque option demande ${route.walkMin} min de marche jusqu'à l'arrêt, puis ${route.totalStops} arrêts en transport.`,
         ].join("\n")
         : [
-          `Yes. For ${route.destName}, you can keep using ${transport} route ${route.routeLabel} from ${stopName}.`,
+          `Yes. For ${route.destName}, the main option is ${routeSummary} from ${stopName}.`,
           `Upcoming options are ${options.join("; ")}.`,
           `They all ride ${route.totalStops} stops after the ${route.walkMin} min walk to the stop.`,
         ].join(" "),
+  };
+}
+
+async function resolveNavigationOrigin(
+  input: string,
+  context: TransitAssistantContext,
+): Promise<{ label: string; pos?: [number, number] | null }> {
+  const originQuery = extractOriginQuery(input);
+  if (!originQuery) {
+    return {
+      label: context.originLabel ?? "current-location",
+      pos: context.originPos,
+    };
+  }
+
+  const originMatch = (await searchDestinations(originQuery).catch(() => []))[0];
+  return {
+    label: originMatch?.name ?? originQuery,
+    pos: originMatch?.pos ?? context.originPos,
   };
 }
 
@@ -1864,25 +2002,91 @@ function describeUpcomingHolidaysLocalized(impacts: HolidayImpact[], input: stri
   return `Upcoming Ontario holidays I can see:\n\n${list}\n\nBefore going: TTC schedules and travel patterns may differ from a normal weekday.`;
 }
 
-function formatLegMode(mode: NavigationLeg["mode"]): string {
-  if (mode === "BUS") return "bus";
-  if (mode === "STREETCAR") return "streetcar";
-  if (mode === "SUBWAY") return "subway";
-  if (mode === "WALK") return "walk";
-  if (mode === "CAR") return "drive";
-  if (mode === "BICYCLE") return "bike";
-  if (mode === "TRANSIT") return "transit";
-  return "travel";
+function formatLegMode(mode: NavigationLeg["mode"], language: ResponseLanguage = "en"): string {
+  const labels: Record<NavigationLeg["mode"], Record<ResponseLanguage, string>> = {
+    BUS: { en: "bus", zh: "公交", fr: "bus" },
+    STREETCAR: { en: "streetcar", zh: "街车", fr: "tramway" },
+    SUBWAY: { en: "subway", zh: "地铁", fr: "métro" },
+    WALK: { en: "walk", zh: "步行", fr: "marche" },
+    CAR: { en: "drive", zh: "开车", fr: "voiture" },
+    BICYCLE: { en: "bike", zh: "骑车", fr: "vélo" },
+    TRANSIT: { en: "transit", zh: "公共交通", fr: "transport" },
+    OTHER: { en: "travel", zh: "出行", fr: "trajet" },
+  };
+
+  return labels[mode]?.[language] ?? labels.OTHER[language];
 }
 
-function describeNavigationLeg(leg: NavigationLeg): string {
-  const mode = formatLegMode(leg.mode);
+function describeNavigationLeg(leg: NavigationLeg, language: ResponseLanguage = "en"): string {
+  const mode = formatLegMode(leg.mode, language);
   const routeText = leg.routeLabel ? ` ${leg.routeLabel}` : "";
-  const headsignText = leg.headsign ? ` toward ${leg.headsign}` : "";
   const timeText = leg.startTime && leg.endTime ? ` (${leg.startTime}-${leg.endTime})` : "";
   const distanceText = leg.distanceMeters && leg.mode === "WALK" ? `, ${leg.distanceMeters} m` : "";
 
+  if (language === "zh") {
+    const headsignText = leg.headsign ? ` 往 ${leg.headsign}` : "";
+    return `${mode}${routeText}${headsignText}：${leg.fromName} 到 ${leg.toName}，约 ${leg.durationMin} 分钟${distanceText}${timeText}`;
+  }
+
+  if (language === "fr") {
+    const headsignText = leg.headsign ? ` vers ${leg.headsign}` : "";
+    return `${mode}${routeText}${headsignText} de ${leg.fromName} à ${leg.toName} pendant ${leg.durationMin} min${distanceText}${timeText}`;
+  }
+
+  const headsignText = leg.headsign ? ` toward ${leg.headsign}` : "";
   return `${mode}${routeText}${headsignText} from ${leg.fromName} to ${leg.toName} for ${leg.durationMin} min${distanceText}${timeText}`;
+}
+
+function localizedTransitVehicle(language: ResponseLanguage): string {
+  if (language === "zh") return "公共交通";
+  if (language === "fr") return "transport en commun";
+  return "transit";
+}
+
+function summarizeNavigationRoute(route: NavigationRoute, language: ResponseLanguage): string {
+  const duration = route.durationMin ? `${route.durationMin} min` : `${route.etaMin} min`;
+  const timeRange = route.departureTime && route.arrivalTime ? `${route.departureTime}-${route.arrivalTime}` : route.arrivalTime;
+  const majorLegs = route.legs
+    ?.filter(leg => leg.mode !== "WALK")
+    .slice(0, 4)
+    .map(leg => [formatLegMode(leg.mode, language), leg.routeLabel, leg.headsign ? (language === "zh" ? `往 ${leg.headsign}` : language === "fr" ? `vers ${leg.headsign}` : `toward ${leg.headsign}`) : ""].filter(Boolean).join(" "))
+    .filter(Boolean)
+    .join(language === "zh" ? " → " : " -> ");
+  const walkText = route.walkMin > 0
+    ? language === "zh"
+      ? `，步行 ${route.walkMin} 分钟`
+      : language === "fr"
+        ? `, ${route.walkMin} min de marche`
+        : `, ${route.walkMin} min walk`
+    : "";
+
+  if (language === "zh") {
+    return `${majorLegs || localizedTransitVehicle(language)}，约 ${duration}${timeRange ? `，${timeRange}` : ""}${walkText}`;
+  }
+  if (language === "fr") {
+    return `${majorLegs || localizedTransitVehicle(language)}, environ ${duration}${timeRange ? `, ${timeRange}` : ""}${walkText}`;
+  }
+  return `${majorLegs || localizedTransitVehicle(language)}, about ${duration}${timeRange ? `, ${timeRange}` : ""}${walkText}`;
+}
+
+function buildNavigationAlternativesText(route: NavigationRoute, language: ResponseLanguage): string[] {
+  const options = [route, ...(route.alternatives ?? [])]
+    .filter(candidate => candidate.available !== false)
+    .slice(0, 4);
+
+  if (options.length <= 1) return [];
+
+  const title = language === "zh"
+    ? "可选路线："
+    : language === "fr"
+      ? "Options :"
+      : "Route options:";
+  const lines = options.map((candidate, index) => {
+    const label = language === "zh" ? `方案 ${index + 1}` : language === "fr" ? `Option ${index + 1}` : `Option ${index + 1}`;
+    return `${label}: ${summarizeNavigationRoute(candidate, language)}`;
+  });
+
+  return [title, ...lines];
 }
 
 function buildNavigationTripText(
@@ -1918,57 +2122,66 @@ function buildNavigationTripText(
 
   if (route.legs?.length) {
     const totalTime = route.durationMin ? `${route.durationMin} min` : `${timing.etaMin} min`;
-    const legText = route.legs.slice(0, 5).map(describeNavigationLeg).join("; ");
+    const legText = route.legs.slice(0, 5).map(leg => describeNavigationLeg(leg, language)).join(language === "zh" ? "；" : "; ");
+    const plannedText = timing.targetTime ? formatAssistantDepartureTarget(timing.targetTime, language) : "";
+    const alternativesText = buildNavigationAlternativesText(route, language);
     if (language === "zh") {
       return [
-        `去 ${route.destName} 大约需要 ${totalTime}。`,
+        `去 ${route.destName} 大约需要 ${totalTime}${plannedText ? `（${plannedText}）` : ""}。`,
         `步骤：${legText}。`,
         route.arrivalTime ? `预计到达：${route.arrivalTime}。` : "",
+        ...alternativesText,
       ].filter(Boolean);
     }
     if (language === "fr") {
       return [
-        `Pour aller à ${route.destName}, le trajet prend environ ${totalTime}.`,
+        `Pour aller à ${route.destName}, le trajet prend environ ${totalTime}${plannedText ? ` (${plannedText})` : ""}.`,
         `Étapes : ${legText}.`,
         route.arrivalTime ? `Arrivée estimée : ${route.arrivalTime}.` : "",
+        ...alternativesText,
       ].filter(Boolean);
     }
     return [
-      `To get to ${route.destName}, the trip is about ${totalTime}.`,
+      `To get to ${route.destName}, the trip is about ${totalTime}${plannedText ? ` (${plannedText})` : ""}.`,
       `Steps: ${legText}.`,
       route.arrivalTime ? `Estimated arrival: ${route.arrivalTime}.` : "",
+      ...alternativesText,
     ].filter(Boolean);
   }
 
   const stopName = route.busStop.replace(/[.]+$/, "");
-  const transport = route.routeLabel.match(/^\d+/) ? "TTC transit" : "transit";
+  const transport = localizedTransitVehicle(language);
+  const plannedText = timing.targetTime ? formatAssistantDepartureTarget(timing.targetTime, language) : "";
   const intro = timing.timingNote
     ? `${timing.timingNote} take ${transport} route ${route.routeLabel} to get to ${route.destName}.`
     : `To get to ${route.destName}, take ${transport} route ${route.routeLabel}.`;
 
   if (language === "zh") {
     return [
-      `去 ${route.destName}，搭乘 ${transport} ${route.routeLabel}。`,
+      `去 ${route.destName}，搭乘 ${transport} ${route.routeLabel}${plannedText ? `（${plannedText}）` : ""}。`,
       `先步行 ${route.walkMin} 分钟（${route.walkMeters} m）到 ${stopName}。`,
       `车辆预计 ${timing.etaMin} 分钟后到达，然后乘坐 ${route.totalStops} 站。`,
       `预计到达：${timing.arrivalTime}。`,
+      ...buildNavigationAlternativesText(route, language),
     ];
   }
 
   if (language === "fr") {
     return [
-      `Pour aller à ${route.destName}, prenez ${transport} ${route.routeLabel}.`,
+      `Pour aller à ${route.destName}, prenez ${transport} ${route.routeLabel}${plannedText ? ` (${plannedText})` : ""}.`,
       `Marchez ${route.walkMin} min (${route.walkMeters} m) jusqu'à ${stopName}.`,
       `Le véhicule est estimé dans ${timing.etaMin} min, puis vous ferez ${route.totalStops} arrêts.`,
       `Arrivée estimée : ${timing.arrivalTime}.`,
+      ...buildNavigationAlternativesText(route, language),
     ];
   }
 
   return [
-    intro,
+    plannedText ? `For ${plannedText}, take ${transport} route ${route.routeLabel} to get to ${route.destName}.` : intro,
     `Walk ${route.walkMin} min (${route.walkMeters} m) to ${stopName} station/stop.`,
     `The vehicle is estimated in ${timing.etaMin} min, then ride ${route.totalStops} stops.`,
     `Estimated arrival: ${timing.arrivalTime}.`,
+    ...buildNavigationAlternativesText(route, language),
   ];
 }
 
@@ -2486,7 +2699,7 @@ async function answerGuideQuestion(
           guideTopic: profile.topic,
           lastIntent: "recommendation",
         },
-        text: `I found these Yelp recommendations:${locationText}\n\n${formatYelpRecommendationList(yelpItems)}\n\nSource: Yelp via SerpApi. Check hours and availability before going.`,
+        text: `I found these recommendations:${locationText}\n\n${formatYelpRecommendationList(yelpItems)}\n\nBefore going: check hours, availability, and recent reviews.`,
       };
     }
 
@@ -2603,15 +2816,23 @@ async function answerDestinationQuestion(
     ? (await searchDestinations(destinationQuery))[0]?.id
     : context.destinationId;
   if (!destinationId) {
+    const language = detectResponseLanguage(input);
     return {
       matchedIntent: "navigation",
       confidence: 62,
       context,
-      text: `I could not find "${destinationQuery}" as a destination yet. Try a known place like CN Tower, Kensington Market, or Spadina at Dundas.`,
+      text: language === "zh"
+        ? `我还找不到 "${destinationQuery}" 这个目的地。可以试试更具体的地点、车站或地址，比如 Union Station、CN Tower、Square One。`
+        : language === "fr"
+          ? `Je ne trouve pas encore "${destinationQuery}" comme destination. Essayez un lieu, une station ou une adresse plus précise.`
+          : `I could not find "${destinationQuery}" as a destination yet. Try a more specific place, station, or address such as Union Station, CN Tower, or Square One.`,
     };
   }
 
-  const route = await getNavigationRoute(context.originLabel ?? "current-location", destinationId, context.originPos);
+  const departureTarget = getNavigationDepartureTarget(input, context);
+  const departureTime = departureTarget ? formatTransitTime(departureTarget) : undefined;
+  const origin = await resolveNavigationOrigin(input, context);
+  const route = await getNavigationRoute(origin.label, destinationId, origin.pos, "bus", departureTime);
   if (isOptionsFollowUp(input)) {
     const optionsAnswer = buildDestinationOptionsAnswer(route, context, input);
     return {
@@ -2622,16 +2843,21 @@ async function answerDestinationQuestion(
         destinationId,
         navigationEtaMin: optionsAnswer.etaMin,
         navigationArrivalTime: optionsAnswer.arrivalTime,
+        originLabel: origin.label,
+        originPos: origin.pos ?? context.originPos,
+        lastTargetTimeIso: departureTarget?.toISOString() ?? context.lastTargetTimeIso,
         lastIntent: "navigation",
       },
       text: optionsAnswer.text,
     };
   }
 
-  const timing = calculateDestinationTiming(input, route, context);
+  const timing = calculateDestinationTiming(input, route, context, departureTarget);
   const nextContext = {
     ...context,
     destinationId,
+    originLabel: origin.label,
+    originPos: origin.pos ?? context.originPos,
     navigationEtaMin: timing.etaMin,
     navigationArrivalTime: timing.arrivalTime,
     lastTargetTimeIso: timing.targetTime?.toISOString() ?? context.lastTargetTimeIso,
@@ -3196,7 +3422,8 @@ async function buildTransitAssistantAnswer(
   const wantsRecommendation = llmIntent === "recommendation";
   const wantsGuide = wantsRecommendation || isGuideQuestion(q) || llmIntent === "guide" || isGuideFollowUp(q, context);
   const destinationQueryForNavigation = extractDestinationQuery(q);
-  const navigationVerbRequested = /\b(?:navigate|directions?|route\s+me|get\s+me|take\s+me|how\s+(?:do|can|should)\s+i\s+get|how\s+to\s+get|go\s+to|travel\s+to|transit\s+to|trip\s+to)\b/i.test(q);
+  const navigationVerbRequested = /\b(?:navigate|directions?|route\s+me|get\s+me|take\s+me|how\s+(?:do|can|should)\s+i\s+get|how\s+to\s+get|go\s+to|travel\s+to|transit\s+to|trip\s+to)\b/i.test(q) ||
+    /(?:导航|路线|怎么去|怎么到|如何去|如何到|前往|从.+到|出行方式|公交怎么走|坐车去)/i.test(q);
   const explicitNavigationQuestion =
     (!wantsGuide && isNavigationQuestion(q)) ||
     (Boolean(destinationQueryForNavigation) && navigationVerbRequested && !/\b(?:things?\s+to\s+do|where\s+to|what\s+to|recommend|guide|itinerary|restaurants?|attractions?)\b/i.test(q)) ||
@@ -3249,7 +3476,9 @@ async function buildTransitAssistantAnswer(
 
   const isTransitQuestion = llmIntent
     ? llmIntent !== "out-of-scope"
-    : /bus|ttc|route|stop|station|eta|arriv|delay|late|weather|traffic|event|game|concert|show|festival|holiday|long weekend|crowd|busy|navigate|direction|trip|destination|terminal|terminus|last stop|final stop|walk|go to|get to|take me|east|west|north|south|\b\d{3}\b/i.test(q) || followUp;
+    : /bus|ttc|go transit|miway|yrt|viva|brampton|oakville|halton|durham|gta|union station|route|stop|station|eta|arriv|delay|late|weather|traffic|event|game|concert|show|festival|holiday|long weekend|crowd|busy|navigate|direction|trip|destination|terminal|terminus|last stop|final stop|walk|go to|get to|take me|east|west|north|south|\b\d{3}\b/i.test(q) ||
+      /公交|地铁|街车|车站|到站|路线|导航|出行|怎么去|怎么到|前往|从.+到|延误|晚点|天气|交通|活动|节假日|拥挤|联合车站|多伦多|大多|密西沙加|奥克维尔|约克区|宾顿/i.test(q) ||
+      followUp;
   if (!isTransitQuestion) {
     const language = detectResponseLanguage(q);
     return {

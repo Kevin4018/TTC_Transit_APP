@@ -89,6 +89,7 @@ export interface NavigationRoute {
   totalStops: number;
   alsoAt: string[];
   legs?: NavigationLeg[];
+  alternatives?: NavigationRoute[];
 }
 
 export interface NavigationLeg {
@@ -2243,7 +2244,7 @@ const getOtpNavigationRoute = async (
         ${dateTimeArgument}
         modes: { ${modesByMode[mode]} }
         searchWindow: "PT6H"
-        first: 1
+        first: 4
       ) {
         routingErrors { code description }
         edges {
@@ -2291,7 +2292,10 @@ const getOtpNavigationRoute = async (
     const data = await response.json() as OtpPlanResponse;
     if (data.errors?.length) return getNavigationUnavailableRoute(dest, originCoordinates, mode);
 
-    const itinerary: OtpItinerary | undefined = data.data?.planConnection?.edges?.[0]?.node;
+    const itineraries = data.data?.planConnection?.edges
+      ?.map(edge => edge.node)
+      .filter((candidate): candidate is OtpItinerary => Boolean(candidate?.legs?.length)) ?? [];
+    const itinerary: OtpItinerary | undefined = itineraries[0];
     if (!itinerary?.legs?.length) {
       return getUnavailableNavigationRoute(
         dest,
@@ -2301,50 +2305,58 @@ const getOtpNavigationRoute = async (
       );
     }
 
-    const legs: NavigationLeg[] = itinerary.legs.map((leg) => ({
-      mode: normalizeOtpMode(leg.mode),
-      fromName: leg.from?.name ?? "Origin",
-      toName: leg.to?.name ?? "Destination",
-      fromPos: leg.from?.lat !== undefined && leg.from?.lon !== undefined ? [leg.from.lat, leg.from.lon] : undefined,
-      toPos: leg.to?.lat !== undefined && leg.to?.lon !== undefined ? [leg.to.lat, leg.to.lon] : undefined,
-      durationMin: Math.max(1, Math.round((leg.duration ?? 0) / 60)),
-      distanceMeters: leg.distance === undefined ? undefined : Math.round(leg.distance),
-      routeLabel: leg.route?.shortName ?? leg.route?.longName,
-      headsign: leg.headsign,
-      startTime: formatOtpTime(leg.start?.scheduledTime),
-      endTime: formatOtpTime(leg.end?.scheduledTime),
-      geometry: leg.legGeometry?.points ? decodePolyline(leg.legGeometry.points) : undefined,
-    }));
+    const buildRouteFromItinerary = (candidate: OtpItinerary): NavigationRoute => {
+      const legs: NavigationLeg[] = (candidate.legs ?? []).map((leg) => ({
+        mode: normalizeOtpMode(leg.mode),
+        fromName: leg.from?.name ?? "Origin",
+        toName: leg.to?.name ?? "Destination",
+        fromPos: leg.from?.lat !== undefined && leg.from?.lon !== undefined ? [leg.from.lat, leg.from.lon] : undefined,
+        toPos: leg.to?.lat !== undefined && leg.to?.lon !== undefined ? [leg.to.lat, leg.to.lon] : undefined,
+        durationMin: Math.max(1, Math.round((leg.duration ?? 0) / 60)),
+        distanceMeters: leg.distance === undefined ? undefined : Math.round(leg.distance),
+        routeLabel: leg.route?.shortName ?? leg.route?.longName,
+        headsign: leg.headsign,
+        startTime: formatOtpTime(leg.start?.scheduledTime),
+        endTime: formatOtpTime(leg.end?.scheduledTime),
+        geometry: leg.legGeometry?.points ? decodePolyline(leg.legGeometry.points) : undefined,
+      }));
 
-    const otpTransitLeg = itinerary.legs.find((leg) => leg.transitLeg);
-    const transitLeg = legs.find((leg) =>
-      leg.mode === "BUS" || leg.mode === "STREETCAR" || leg.mode === "SUBWAY" || leg.mode === "TRANSIT"
-    );
-    const transitEtaMin = getMinutesBetween(itinerary.start, otpTransitLeg?.start?.scheduledTime);
-    const walkMeters = Math.round(itinerary.walkDistance ?? legs
-      .filter((leg) => leg.mode === "WALK")
-      .reduce((sum, leg) => sum + (leg.distanceMeters ?? 0), 0));
-
-    return {
-      source: "otp",
-      available: true,
-      originCoordinates,
-      destinationCoordinates: { lat: dest.lat, lng: dest.lng },
-      destName: dest.name,
-      destAddress: dest.address,
-      durationMin: Math.max(1, Math.round((itinerary.duration ?? 0) / 60)),
-      walkMin: legs
+      const otpTransitLeg = candidate.legs?.find((leg) => leg.transitLeg);
+      const transitLeg = legs.find((leg) =>
+        leg.mode === "BUS" || leg.mode === "STREETCAR" || leg.mode === "SUBWAY" || leg.mode === "TRANSIT"
+      );
+      const transitEtaMin = getMinutesBetween(candidate.start, otpTransitLeg?.start?.scheduledTime);
+      const walkMeters = Math.round(candidate.walkDistance ?? legs
         .filter((leg) => leg.mode === "WALK")
-        .reduce((sum, leg) => sum + leg.durationMin, 0),
-      walkMeters,
-      busStop: transitLeg?.fromName ?? legs[0]?.toName ?? dest.name,
-      routeLabel: [transitLeg?.routeLabel, transitLeg?.headsign].filter(Boolean).join(" to ") || modeLabel(mode),
-      etaMin: transitEtaMin ?? Math.max(1, Math.round((itinerary.duration ?? 0) / 60)),
-      departureTime: formatOtpTime(itinerary.start) || legs[0]?.startTime || "",
-      arrivalTime: formatOtpTime(itinerary.end) || legs.at(-1)?.endTime || "",
-      totalStops: legs.filter((leg) => leg.mode !== "WALK").length,
-      alsoAt: [],
-      legs,
+        .reduce((sum, leg) => sum + (leg.distanceMeters ?? 0), 0));
+
+      return {
+        source: "otp",
+        available: true,
+        originCoordinates,
+        destinationCoordinates: { lat: dest.lat, lng: dest.lng },
+        destName: dest.name,
+        destAddress: dest.address,
+        durationMin: Math.max(1, Math.round((candidate.duration ?? 0) / 60)),
+        walkMin: legs
+          .filter((leg) => leg.mode === "WALK")
+          .reduce((sum, leg) => sum + leg.durationMin, 0),
+        walkMeters,
+        busStop: transitLeg?.fromName ?? legs[0]?.toName ?? dest.name,
+        routeLabel: [transitLeg?.routeLabel, transitLeg?.headsign].filter(Boolean).join(" to ") || modeLabel(mode),
+        etaMin: transitEtaMin ?? Math.max(1, Math.round((candidate.duration ?? 0) / 60)),
+        departureTime: formatOtpTime(candidate.start) || legs[0]?.startTime || "",
+        arrivalTime: formatOtpTime(candidate.end) || legs.at(-1)?.endTime || "",
+        totalStops: legs.filter((leg) => leg.mode !== "WALK").length,
+        alsoAt: [],
+        legs,
+      };
+    };
+
+    const routes = itineraries.map(buildRouteFromItinerary);
+    return {
+      ...routes[0],
+      alternatives: routes.slice(1),
     };
   } catch {
     return getNavigationUnavailableRoute(dest, originCoordinates, mode);
