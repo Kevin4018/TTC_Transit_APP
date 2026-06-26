@@ -1,0 +1,64 @@
+{
+  "feeds": [
+    {
+      "id": "ttc",
+      "name": "TTC",
+      "url": "https://example.com/replace-with-official-ttc-schedule-feed.zip",
+      "enabled": false
+    },
+    {
+      "id": "go-transit",
+      "name": "GO Transit / UP Express",
+      "url": "https://example.com/replace-with-official-metrolinx-schedule-feed.zip",
+      "enabled": false
+    },
+    {
+      "id": "oakville-transit",
+      "name": "Oakville Transit",
+      "url": "https://example.com/replace-with-official-oakville-transit-schedule-feed.zip",
+      "enabled": false
+    },
+    {
+      "id": "miway",
+      "name": "MiWay",
+      "localPath": "./vendor/regional-transit/miway/miway.gtfs.zip",
+      "enabled": false
+    },
+    {
+      "id": "yrt-viva",
+      "name": "YRT / Viva",
+      "localPath": "./vendor/regional-transit/yrt-viva/yrt-viva.gtfs.zip",
+      "enabled": false
+    },
+    {
+      "id": "brampton-transit",
+      "name": "Brampton Transit / Zum",
+      "url": "https://example.com/replace-with-official-brampton-transit-schedule-feed.zip",
+      "enabled": false
+    },
+    {
+      "id": "durham-region-transit",
+      "name": "Durham Region Transit",
+      "url": "https://example.com/replace-with-official-drt-schedule-feed.zip",
+      "enabled": false
+    },
+    {
+      "id": "burlington-transit",
+      "name": "Burlington Transit",
+      "url": "https://example.com/replace-with-official-burlington-transit-schedule-feed.zip",
+      "enabled": false
+    },
+    {
+      "id": "hsr",
+      "name": "Hamilton Street Railway",
+      "url": "https://example.com/replace-with-official-hsr-schedule-feed.zip",
+      "enabled": false
+    },
+    {
+      "id": "milton-transit",
+      "name": "Milton Transit",
+      "url": "https://example.com/replace-with-official-milton-transit-schedule-feed.zip",
+      "enabled": false
+    }
+  ]
+}

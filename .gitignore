@@ -4,6 +4,9 @@ data/*
 !data/gtfs-slim.sqlite
 !data/construction/
 !data/construction/Road-reconstruction-program.geojson
+!data/otp/
+data/otp/*
+!data/otp/build-config.json
 
 .env
 .env.local

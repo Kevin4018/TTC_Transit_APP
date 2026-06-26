@@ -553,6 +553,46 @@ const getDestinationRecord = (destination: string): DestinationRecord | null => 
   };
 };
 
+const getDestinationRecordFromSearchResult = (result: DestinationResult): DestinationRecord | null => {
+  const existing = getDestinationRecord(result.id);
+  if (existing) return existing;
+  if (!result.pos) return null;
+
+  const name = result.name.replace(/^destination:\s*/i, "").trim();
+  return {
+    name,
+    address: result.address,
+    lat: result.pos[0],
+    lng: result.pos[1],
+    distance: result.distance,
+    walkMin: 0,
+    walkMeters: 0,
+    busStop: name,
+    routeLabel: "Transit",
+    etaMin: 0,
+    departureTime: "",
+    arrivalTime: "",
+    totalStops: 0,
+    alsoAt: [],
+  };
+};
+
+const resolveDestinationRecord = async (destination: string): Promise<DestinationRecord | null> => {
+  const directDestination = getDestinationRecord(destination);
+  if (directDestination) return directDestination;
+
+  const query = destination.replace(/^destination:\s*/i, "").trim();
+  if (!query) return null;
+
+  const results = await searchDestinations(query);
+  const normalizedQuery = query.toLowerCase();
+  const bestMatch =
+    results.find((result) => result.name.replace(/^destination:\s*/i, "").toLowerCase() === normalizedQuery) ??
+    results[0];
+
+  return bestMatch ? getDestinationRecordFromSearchResult(bestMatch) : null;
+};
+
 const getGtfsStopRoutes = (db: Database.Database, stopId: string) => {
   const group = getGtfsStopGroup(db, stopId);
   const stopIds = group?.stops.map((stop) => stop.stop_id) ?? [stopId];
@@ -2387,14 +2427,14 @@ const getRealRoutingConfigurationRequiredRoute = (
   legs: [],
 });
 
-export const getNavigationRoute = (
+export const getNavigationRoute = async (
   origin: string,
   destination: string,
   originCoordinates?: { lat: number; lng: number },
   mode: NavigationMode = "bus",
   departureTime?: string,
 ): Promise<NavigationRoute> => {
-  const dest = getDestinationRecord(destination);
+  const dest = await resolveDestinationRecord(destination);
   if (!dest) throw new Error(`Unknown destination: ${destination}`);
 
   void origin;
