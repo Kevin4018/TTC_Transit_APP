@@ -336,6 +336,7 @@ import {
   getCurrentWeather,
   type CurrentWeather,
 } from "@/api/weather";
+import { sendFeedback } from "@/api/feedback";
 import {
   getTrafficImpact,
   type TrafficImpact,
@@ -1791,6 +1792,153 @@ function MilkIcon({ size = 30 }: { size?: number }) {
   );
 }
 
+const FeedbackIcon = ({ fill = "#1D1B20" }: { fill?: string }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path
+      d="M4.5 5.5C4.5 4.39543 5.39543 3.5 6.5 3.5H17.5C18.6046 3.5 19.5 4.39543 19.5 5.5V13.5C19.5 14.6046 18.6046 15.5 17.5 15.5H10L5.5 19.25V15.5H6.5C5.39543 15.5 4.5 14.6046 4.5 13.5V5.5Z"
+      stroke={fill}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path d="M8 8.5H16M8 11.5H13" stroke={fill} strokeWidth="2" strokeLinecap="round" />
+  </svg>
+);
+
+type FeedbackStatus = "idle" | "sending" | "sent" | "error";
+
+function FeedbackButton() {
+  const [open, setOpen] = useState(false);
+  const [message, setMessage] = useState("");
+  const [email, setEmail] = useState("");
+  const [status, setStatus] = useState<FeedbackStatus>("idle");
+  const [error, setError] = useState("");
+
+  async function handleSend() {
+    const trimmed = message.trim();
+    if (trimmed.length < 3 || status === "sending") return;
+
+    setStatus("sending");
+    setError("");
+
+    try {
+      await sendFeedback({
+        message: trimmed,
+        email: email.trim() || undefined,
+        page: window.location.href,
+        deviceInfo: navigator.userAgent,
+      });
+      setStatus("sent");
+      setMessage("");
+      setEmail("");
+    } catch (sendError) {
+      setStatus("error");
+      setError(sendError instanceof Error ? sendError.message : "Could not send feedback right now.");
+    }
+  }
+
+  function openFeedback() {
+    setOpen(true);
+    setStatus("idle");
+    setError("");
+  }
+
+  function closeFeedback() {
+    setOpen(false);
+    if (status !== "sending") {
+      setStatus("idle");
+      setError("");
+    }
+  }
+
+  return (
+    <>
+      <button
+        onClick={openFeedback}
+        className="fixed right-5 bottom-6 z-[1999] h-12 rounded-full bg-white border border-[#d9d9d9] px-4 flex items-center gap-2 shadow-[0px_4px_14px_rgba(0,0,0,0.18)] font-['Inter',system-ui,sans-serif] text-[14px] font-semibold text-[#1e1e1e] hover:bg-[#f7f7f7]"
+        aria-label="Send feedback"
+      >
+        <FeedbackIcon />
+        <span>Feedback</span>
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-[2200] bg-black/35 flex items-center justify-center px-4">
+          <div className="w-full max-w-[430px] rounded-[18px] bg-white border border-[#d9d9d9] shadow-[0px_16px_40px_rgba(0,0,0,0.25)] overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#ececec]">
+              <div className="flex items-center gap-2">
+                <FeedbackIcon />
+                <h2 className="font-['Inter',system-ui,sans-serif] text-[17px] font-bold text-[#1e1e1e]">
+                  Send feedback
+                </h2>
+              </div>
+              <button
+                onClick={closeFeedback}
+                className="size-8 rounded-full flex items-center justify-center hover:bg-[#f3f3f3]"
+                aria-label="Close feedback"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+
+            <div className="p-5">
+              <label className="block font-['Inter',system-ui,sans-serif] text-[13px] font-semibold text-[#4f4f4f] mb-2">
+                What should we improve?
+              </label>
+              <textarea
+                value={message}
+                onChange={event => {
+                  setMessage(event.target.value);
+                  if (status !== "sending") setStatus("idle");
+                }}
+                placeholder="Tell us what happened or what could be better..."
+                className="w-full min-h-[132px] rounded-[12px] border border-[#d9d9d9] p-3 font-['Inter',system-ui,sans-serif] text-[14px] text-[#1e1e1e] outline-none focus:border-[#1e1e1e] resize-none"
+              />
+
+              <label className="block font-['Inter',system-ui,sans-serif] text-[13px] font-semibold text-[#4f4f4f] mt-4 mb-2">
+                Email optional
+              </label>
+              <input
+                value={email}
+                onChange={event => setEmail(event.target.value)}
+                placeholder="you@example.com"
+                className="w-full h-11 rounded-[12px] border border-[#d9d9d9] px-3 font-['Inter',system-ui,sans-serif] text-[14px] text-[#1e1e1e] outline-none focus:border-[#1e1e1e]"
+              />
+
+              <div className="mt-5 flex justify-end gap-3">
+                <button
+                  onClick={closeFeedback}
+                  className="h-10 px-4 rounded-[10px] border border-[#d9d9d9] font-['Inter',system-ui,sans-serif] text-[14px] text-[#1e1e1e]"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSend}
+                  disabled={status === "sending" || message.trim().length < 3}
+                  className="h-10 px-4 rounded-[10px] bg-[#1e1e1e] disabled:bg-[#a8a8a8] font-['Inter',system-ui,sans-serif] text-[14px] text-white"
+                >
+                  {status === "sending" ? "Sending..." : "Send"}
+                </button>
+              </div>
+
+              {status === "sent" && (
+                <p className="mt-3 font-['Inter',system-ui,sans-serif] text-[13px] text-[#167c3a]">
+                  Feedback sent. Thank you.
+                </p>
+              )}
+              {status === "error" && (
+                <p className="mt-3 font-['Inter',system-ui,sans-serif] text-[13px] text-[#b42318]">
+                  {error || "Something went wrong. Please try again."}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function AiChatbot({ appContext }: { appContext?: TransitAssistantContext }) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -1832,6 +1980,21 @@ function AiChatbot({ appContext }: { appContext?: TransitAssistantContext }) {
 
     try {
       const answer = await askTransitAssistant(text, assistantContext);
+      if (import.meta.env?.VITE_ASSISTANT_DEBUG === "true" && answer.context?.lastUnderstanding) {
+        console.groupCollapsed("[Milk bot understanding]");
+        console.log("user", text);
+        console.log("resolved", answer.context.lastUnderstanding);
+        console.log("memory", {
+          currentTopic: answer.context.currentTopic,
+          currentLocalInfoIntent: answer.context.currentLocalInfoIntent,
+          mentionedPlaces: answer.context.mentionedPlaces,
+          date: answer.context.date,
+          targetGroup: answer.context.targetGroup,
+          compareBy: answer.context.compareBy,
+          missingSlots: answer.context.missingSlots,
+        });
+        console.groupEnd();
+      }
       if (answer.context) setAssistantContext(answer.context);
       setMessages(prev => [...prev, { role: "ai", text: answer.text }]);
     } catch {
@@ -1914,7 +2077,7 @@ function AiChatbot({ appContext }: { appContext?: TransitAssistantContext }) {
                         Ask Milk bot
                       </p>
                       <p className="font-['Inter',system-ui,sans-serif] text-[12px] leading-[1.35] text-[#767676]">
-                        TTC, trips, delays, weather, events, and Toronto recommendations.
+                        TTC, GTA transit, trips, delays, weather, events, and local recommendations.
                       </p>
                     </div>
                   </div>
@@ -2589,103 +2752,130 @@ export default function App() {
 
   return (
     <>
-    <AiChatbot appContext={chatbotContext} />
-    <div className="min-h-screen bg-gray-100 flex items-start justify-center overflow-auto py-1">
-      <div
-        className="relative shrink-0"
-        style={{
-          width: DESIGN_WIDTH * canvasScale,
-          minHeight: DESIGN_HEIGHT * canvasScale,
-        }}
-      >
-      <div
-        className="w-[390px] min-h-[844px] bg-white relative overflow-x-hidden"
-        style={{
-          zoom: canvasScale,
-        }}
-      >
-        {isMainMapScreen && (
-          <AccountControl
-            currentUser={currentUser}
-            onLogin={handleLogin}
-            onSignup={handleSignup}
-            onLogout={handleLogout}
-          />
-        )}
-        {searching ? (
-          <SearchOverlay
-            query={query}
-            target={searchTarget}
-            currentLocation={userPos ? { label: "Your location", pos: userPos } : null}
-            searchHistory={currentUser?.searchHistory ?? []}
-            onQueryChange={setQuery}
-            onClose={() => { setSearching(false); setSearchTarget("general"); setQuery(""); }}
-            onSelectStop={handleSelectStop}
-            onSelectDest={handleSelectDest}
-            onSelectOrigin={handleSelectOrigin}
-            onSelectCurrentLocation={handleSelectCurrentLocation}
-            onRememberSearch={rememberSearch}
-            onSelectHistory={handleSelectHistory}
-          />
-        ) : screen.id === "loading" ? (
-          <div className="min-h-[844px] bg-white flex items-center justify-center">
-            <div className="flex flex-col items-center gap-3">
-              <Skeleton className="size-[56px] rounded-[18px]" />
-              <Skeleton className="h-4 w-40" />
+      <AiChatbot appContext={chatbotContext} />
+      <FeedbackButton />
+      <div className="min-h-screen bg-[#f2f3f5] lg:grid lg:grid-cols-[minmax(390px,430px)_1fr] lg:overflow-hidden">
+        <aside className="min-h-screen flex items-start justify-center overflow-auto py-1 md:py-4 lg:h-screen lg:min-h-0 lg:items-center lg:border-r lg:border-[#d9d9d9] lg:bg-white/70">
+          <div
+            className="relative shrink-0 rounded-[0px] md:rounded-[24px] md:shadow-[0px_18px_60px_rgba(0,0,0,0.18)] lg:rounded-[18px] lg:shadow-[0px_12px_36px_rgba(0,0,0,0.12)]"
+            style={{
+              width: DESIGN_WIDTH * canvasScale,
+              minHeight: DESIGN_HEIGHT * canvasScale,
+            }}
+          >
+            <div
+              className="w-[390px] min-h-[844px] bg-white relative overflow-x-hidden md:rounded-[24px] lg:rounded-[18px]"
+              style={{
+                zoom: canvasScale,
+              }}
+            >
+              {isMainMapScreen && (
+                <AccountControl
+                  currentUser={currentUser}
+                  onLogin={handleLogin}
+                  onSignup={handleSignup}
+                  onLogout={handleLogout}
+                />
+              )}
+              {searching ? (
+                <SearchOverlay
+                  query={query}
+                  target={searchTarget}
+                  currentLocation={userPos ? { label: "Your location", pos: userPos } : null}
+                  searchHistory={currentUser?.searchHistory ?? []}
+                  onQueryChange={setQuery}
+                  onClose={() => { setSearching(false); setSearchTarget("general"); setQuery(""); }}
+                  onSelectStop={handleSelectStop}
+                  onSelectDest={handleSelectDest}
+                  onSelectOrigin={handleSelectOrigin}
+                  onSelectCurrentLocation={handleSelectCurrentLocation}
+                  onRememberSearch={rememberSearch}
+                  onSelectHistory={handleSelectHistory}
+                />
+              ) : screen.id === "loading" ? (
+                <div className="min-h-[844px] bg-white flex items-center justify-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <Skeleton className="size-[56px] rounded-[18px]" />
+                    <Skeleton className="h-4 w-40" />
+                  </div>
+                </div>
+              ) : screen.id === "map" ? (
+                <MapScreen
+                  stopId={screen.stopId}
+                  showControls={screen.fromSearch}
+                  mapCenter={mapCenter}
+                  userPos={userPos}
+                  locationStatus={locationStatus}
+                  onSearch={() => setSearching(true)}
+                  onOpenReport={handleOpenReport}
+                  onBack={() => setScreen({ id: "map", stopId: homeStopId, fromSearch: false })}
+                  onSwitchToDest={handleUseCurrentStopAsDestination}
+                  onSelectStop={handleSelectStop}
+                  onMapMove={setMapCenter}
+                />
+              ) : screen.id === "busReport" ? (
+                <BusReport
+                  route={screen.route}
+                  dir={screen.dir}
+                  stopId={screen.stopId}
+                  mapCenter={mapCenter}
+                  onClose={handleCloseReport}
+                />
+              ) : screen.id === "destNav" ? (
+                <DestNavScreen
+                  destId={screen.destId}
+                  mapCenter={mapCenter}
+                  originPos={effectiveOriginPos}
+                  originLabel={effectiveOriginLabel}
+                  userPos={userPos}
+                  locationStatus={locationStatus}
+                  onStartNavigation={handleStartNavigation}
+                  onBack={handleBackFromDest}
+                  onSearchOrigin={handleSwitchToOriginSearch}
+                  onSearchDest={handleSwitchToDestSearch}
+                  onSwitchToStop={handleSwitchToStopSearch}
+                />
+              ) : screen.id === "navigation" ? (
+                <NavScreen
+                  destId={screen.destId}
+                  mode={screen.mode}
+                  departureTime={screen.departureTime}
+                  mapCenter={mapCenter}
+                  originPos={effectiveOriginPos}
+                  originLabel={effectiveOriginLabel}
+                  userPos={userPos}
+                  locationStatus={locationStatus}
+                  onClose={handleCloseNavigation}
+                />
+              ) : null}
             </div>
           </div>
-        ) : screen.id === "map" ? (
-          <MapScreen
-            stopId={screen.stopId}
-            showControls={screen.fromSearch}
-            mapCenter={mapCenter}
+        </aside>
+
+        <main className="hidden lg:flex min-h-screen bg-[#e8ebef] relative overflow-hidden">
+          <LeafletMap
+            center={mapCenter}
+            zoom={14}
             userPos={userPos}
             locationStatus={locationStatus}
-            onSearch={() => setSearching(true)}
-            onOpenReport={handleOpenReport}
-            onBack={() => setScreen({ id: "map", stopId: homeStopId, fromSearch: false })}
-            onSwitchToDest={handleUseCurrentStopAsDestination}
-            onSelectStop={handleSelectStop}
-            onMapMove={setMapCenter}
+            onMoveEnd={setMapCenter}
+            className="absolute inset-0"
           />
-        ) : screen.id === "busReport" ? (
-          <BusReport
-            route={screen.route}
-            dir={screen.dir}
-            stopId={screen.stopId}
-            mapCenter={mapCenter}
-            onClose={handleCloseReport}
-          />
-        ) : screen.id === "destNav" ? (
-          <DestNavScreen
-            destId={screen.destId}
-            mapCenter={mapCenter}
-            originPos={effectiveOriginPos}
-            originLabel={effectiveOriginLabel}
-            userPos={userPos}
-            locationStatus={locationStatus}
-            onStartNavigation={handleStartNavigation}
-            onBack={handleBackFromDest}
-            onSearchOrigin={handleSwitchToOriginSearch}
-            onSearchDest={handleSwitchToDestSearch}
-            onSwitchToStop={handleSwitchToStopSearch}
-          />
-        ) : screen.id === "navigation" ? (
-          <NavScreen
-            destId={screen.destId}
-            mode={screen.mode}
-            departureTime={screen.departureTime}
-            mapCenter={mapCenter}
-            originPos={effectiveOriginPos}
-            originLabel={effectiveOriginLabel}
-            userPos={userPos}
-            locationStatus={locationStatus}
-            onClose={handleCloseNavigation}
-          />
-        ) : null}
+          <div className="pointer-events-none absolute left-8 top-8 rounded-[18px] bg-white/92 border border-white/80 px-5 py-4 shadow-[0px_12px_30px_rgba(0,0,0,0.16)]">
+            <div className="flex items-center gap-3">
+              <MilkIcon size={34} />
+              <div>
+                <p className="font-['Inter',system-ui,sans-serif] text-[16px] font-bold text-[#1e1e1e] leading-[1.2]">
+                  Milk Transit
+                </p>
+                <p className="font-['Inter',system-ui,sans-serif] text-[12px] text-[#656565] leading-[1.35]">
+                  Responsive map workspace for Mac and large screens
+                </p>
+              </div>
+            </div>
+          </div>
+        </main>
       </div>
-      </div>
-    </div>
     </>
   );
 }

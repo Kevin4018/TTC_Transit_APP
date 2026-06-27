@@ -3,7 +3,12 @@ import { getTrafficImpact, type TrafficEvent, type TrafficImpact } from "./traff
 import { estimateUnifiedDelays } from "./delayModel";
 import { getEventImpact, type CityEvent, type EventImpact } from "./events";
 import { getHolidayImpact, type HolidayImpact } from "./holidays";
+import { queryLocalInfo, type LocalInfoResponse, type LocalInfoResult } from "./localInfo";
 import { searchYelpRecommendations, type YelpRecommendation } from "./places";
+import {
+  getRegionalPrediction,
+  type RegionalPrediction,
+} from "./regionalTransit";
 import {
   getCurrentWeather,
   getWeatherForecast,
@@ -148,6 +153,10 @@ export interface TransitAssistantContext {
   stopId?: string;
   routeId?: number;
   direction?: string;
+  regionalAgencyId?: string;
+  regionalStopId?: string;
+  regionalRouteName?: string;
+  regionalDirection?: string;
   destinationId?: string;
   originPos?: [number, number];
   originLabel?: string;
@@ -164,6 +173,19 @@ export interface TransitAssistantContext {
   guideBudget?: string;
   guideTopic?: string;
   aroundScope?: TransitAssistantIntentScope;
+  lastRecommendationQuery?: string;
+  lastRecommendationKind?: "shopping" | "food" | "places" | "plan";
+  lastRecommendations?: AssistantRecommendationOption[];
+  currentTopic?: string;
+  currentLocalInfoIntent?: ConversationUnderstandingIntent;
+  mentionedPlaces?: string[];
+  userOrigin?: string;
+  date?: string;
+  targetGroup?: string;
+  compareBy?: ConversationCompareBy;
+  lastResolvedQuestion?: string;
+  missingSlots?: string[];
+  lastUnderstanding?: ConversationUnderstandingResult;
 }
 
 export type TransitAssistantIntent =
@@ -187,10 +209,65 @@ export interface TransitAssistantAnswer {
   context?: TransitAssistantContext;
 }
 
+export interface AssistantRecommendationOption {
+  name: string;
+  address?: string;
+  note?: string;
+  url?: string;
+  price?: string;
+  rating?: number;
+  reviews?: number;
+  distanceKm?: number;
+  categories?: string[];
+  budget?: "free" | "low" | "medium" | "higher";
+  destinationQuery?: string;
+}
+
 export interface TransitAssistantIntentScope {
   kind: "none" | "current" | "place";
   place?: string;
   phrase?: string;
+}
+
+export type ConversationUnderstandingIntent =
+  | "ticket_price"
+  | "opening_hours"
+  | "distance"
+  | "gas_price"
+  | "price_comparison"
+  | "recommendation"
+  | "route"
+  | "local_info"
+  | "clarification"
+  | "unknown";
+
+export type ConversationCompareBy =
+  | "price"
+  | "distance"
+  | "time"
+  | "rating"
+  | "open_now"
+  | "none";
+
+interface ConversationUnderstandingResult {
+  isFollowUp: boolean;
+  resolvedQuestion: string;
+  intent: ConversationUnderstandingIntent;
+  entity?: string;
+  targetGroup?: string;
+  time?: string;
+  compareBy: ConversationCompareBy;
+  missingSlots: string[];
+  needsApi: boolean;
+  apiType:
+    | "google_places"
+    | "google_routes"
+    | "official_ticket_lookup"
+    | "fuel_price"
+    | "web_price_lookup"
+    | "none";
+  confidence: number;
+  reason?: string;
 }
 
 interface TransitAssistantIntentResult {
@@ -475,6 +552,99 @@ async function classifyTransitAssistantIntent(
   }
 }
 
+function inferCurrentTopic(context: TransitAssistantContext): string | undefined {
+  return context.currentTopic ??
+    context.lastRecommendations?.[0]?.name ??
+    context.lastRecommendationQuery;
+}
+
+function heuristicConversationUnderstanding(
+  input: string,
+  context: TransitAssistantContext,
+): ConversationUnderstandingResult {
+  const topic = inferCurrentTopic(context);
+  const normalized = input.trim();
+  const lower = normalized.toLowerCase();
+  const targetGroup =
+    /\b(?:child|children|kid|kids)\b|(?:儿童|孩子|小孩)/i.test(normalized) ? "child" :
+    /\b(?:student|students)\b|(?:学生)/i.test(normalized) ? "student" :
+    /\b(?:senior|seniors)\b|(?:老人|长者|老年)/i.test(normalized) ? "senior" :
+    /\b(?:adult|adults)\b|(?:成人)/i.test(normalized) ? "adult" :
+    undefined;
+  const time =
+    /\btomorrow\b|明天/i.test(normalized) ? "tomorrow" :
+    /\btoday\b|今天/i.test(normalized) ? "today" :
+    /\btonight\b|今晚|晚上/i.test(normalized) ? "tonight" :
+    undefined;
+  const compareBy: ConversationCompareBy =
+    /\b(?:cheapest|cheap|price|cost|expensive)\b|(?:最便宜|便宜|价格|多少钱|贵)/i.test(normalized) ? "price" :
+    /\b(?:closest|nearest|distance|far)\b|(?:最近|距离|多远|远吗|近)/i.test(normalized) ? "distance" :
+    /\b(?:open|hours|closed)\b|(?:开门|营业|关门|开吗)/i.test(normalized) ? "open_now" :
+    /\b(?:rating|best|reviews?)\b|(?:评分|评价|最好)/i.test(normalized) ? "rating" :
+    "none";
+  const isShortFollowUp = Boolean(topic) && (
+    targetGroup !== undefined ||
+    time !== undefined ||
+    compareBy !== "none" ||
+    /^(?:what about|how about|and|那|这个|那个|那里|它|贵吗|远吗|开吗|明天呢|今天呢|学生呢|儿童呢)/i.test(normalized)
+  );
+  const intent: ConversationUnderstandingIntent =
+    compareBy === "distance" ? "distance" :
+    compareBy === "open_now" || time ? "opening_hours" :
+    targetGroup ? "ticket_price" :
+    compareBy === "price" ? "price_comparison" :
+    context.currentLocalInfoIntent ?? "unknown";
+  const resolvedQuestion = isShortFollowUp && topic
+    ? [
+      intent === "ticket_price" ? `What is the ${targetGroup ?? ""} ticket price for ${topic}?` : "",
+      intent === "opening_hours" ? `Is ${topic} open ${time ?? "now"}?` : "",
+      intent === "distance" ? `How far is ${topic} from my location?` : "",
+      intent === "price_comparison" ? `Compare price for ${topic}.` : "",
+    ].find(Boolean) ?? normalized
+    : normalized;
+
+  return {
+    isFollowUp: isShortFollowUp,
+    resolvedQuestion,
+    intent,
+    entity: isShortFollowUp ? topic : undefined,
+    targetGroup,
+    time,
+    compareBy,
+    missingSlots: intent === "distance" && !context.originPos ? ["location"] : [],
+    needsApi: intent !== "unknown",
+    apiType: intent === "distance"
+      ? "google_routes"
+      : intent === "ticket_price"
+        ? "official_ticket_lookup"
+        : intent === "price_comparison"
+          ? "web_price_lookup"
+          : intent === "opening_hours"
+            ? "google_places"
+            : "none",
+    confidence: isShortFollowUp ? 72 : 45,
+    reason: isShortFollowUp ? "Heuristic follow-up resolved from conversation memory." : "No strong follow-up pattern.",
+  };
+}
+
+async function resolveConversationUnderstanding(
+  input: string,
+  context: TransitAssistantContext,
+): Promise<ConversationUnderstandingResult> {
+  const fallback = heuristicConversationUnderstanding(input, context);
+
+  try {
+    const result = await apiRequest<ConversationUnderstandingResult>("/api/ttc/assistant/resolve-context", {
+      method: "POST",
+      body: { input, context },
+    });
+
+    return result.confidence >= 60 ? result : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 async function verifyTransitAssistantAnswer(
   input: string,
   draft: TransitAssistantAnswer,
@@ -617,6 +787,200 @@ function isTransitArrivalRequest(input: string): boolean {
   return /\b(?:when|eta|arriv|arrival|coming|due|next|how\s+long|real\s*time|live|prediction|estimate)\b/i.test(input) ||
     /\b(?:bus|streetcar|vehicle|ttc|route|stop|station)\b/i.test(input) ||
     /(?:多久|几分钟|什么时候到|下一班|实时|到站|公交|电车|车站|路线)/.test(input);
+}
+
+const REGIONAL_AGENCIES = [
+  {
+    id: "go-transit",
+    aliases: ["go transit", "go train", "go bus", "metrolinx", "up express", "up train", "up"],
+  },
+  {
+    id: "miway",
+    aliases: ["miway", "mississauga transit", "mississauga bus"],
+  },
+  {
+    id: "yrt-viva",
+    aliases: ["yrt", "viva", "york region transit", "york region bus"],
+  },
+  {
+    id: "brampton-transit",
+    aliases: ["brampton transit", "brampton bus", "zum", "züm"],
+  },
+] as const;
+
+function normalizeRegionalText(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function detectRegionalAgencyId(input: string, context: TransitAssistantContext): string | undefined {
+  const normalized = normalizeRegionalText(input);
+  const matched = REGIONAL_AGENCIES.find(agency =>
+    agency.aliases.some(alias => normalized.includes(normalizeRegionalText(alias))),
+  );
+  return matched?.id ?? context.regionalAgencyId;
+}
+
+function isRegionalTransitQuestion(input: string, context: TransitAssistantContext): boolean {
+  if (detectRegionalAgencyId(input, context)) return true;
+  return /\b(?:go transit|go train|go bus|miway|mississauga transit|yrt|viva|brampton transit|zum|züm|york region transit)\b/i.test(input);
+}
+
+function cleanRegionalQuery(input: string): string {
+  let cleaned = input;
+  for (const agency of REGIONAL_AGENCIES) {
+    for (const alias of agency.aliases) {
+      cleaned = cleaned.replace(new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), " ");
+    }
+  }
+  return cleaned
+    .replace(/\b(?:bus|train|route|line|stop|station|platform|eta|arrival|arrive|coming|next|when|what|time|from|at|near|by|the|a|an)\b/gi, " ")
+    .replace(/(?:公交|火车|路线|车站|站点|到站|下一班|什么时候|多久|几分钟|在|从|到)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractRegionalRouteName(input: string, context: TransitAssistantContext): string | undefined {
+  const viva = input.match(/\bviva\s+(blue|purple|orange|pink|yellow|green|silver)\b/i)?.[0];
+  if (viva) return viva.replace(/\s+/g, " ").trim();
+
+  const up = /\bup\s+express\b/i.test(input) ? "UP" : undefined;
+  if (up) return up;
+
+  const route = input.match(/\b(?:route|bus|line)\s+([a-z]?\d+[a-z]?|[a-z]+)\b/i)?.[1] ??
+    input.match(/(?:路线|公交)\s*([a-z]?\d+[a-z]?|[a-z]+)/i)?.[1] ??
+    input.match(/\b([1-9]\d{0,2}[a-z]?)\b/i)?.[1];
+
+  return route?.toUpperCase() ?? context.regionalRouteName;
+}
+
+function extractRegionalStopQuery(input: string, context: TransitAssistantContext): string | undefined {
+  const explicit = extractStopQuery(input) ??
+    input.match(/\b(?:at|from|near|by)\s+(.+)$/i)?.[1] ??
+    input.match(/(?:在|从|到)\s*([^，。！？?]+)$/i)?.[1];
+
+  const cleaned = explicit ? cleanRegionalQuery(explicit) : cleanRegionalQuery(input);
+  const route = extractRegionalRouteName(input, context);
+  const withoutRoute = route
+    ? cleaned.replace(new RegExp(`\\b${route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"), " ").replace(/\s+/g, " ").trim()
+    : cleaned;
+
+  if (withoutRoute && !/^(?:next|arrival|eta|schedule)$/i.test(withoutRoute)) return withoutRoute;
+  return undefined;
+}
+
+function formatRegionalPredictionAnswer(prediction: RegionalPrediction, input: string): string {
+  const language = detectResponseLanguage(input);
+  const confidence = prediction.confidence ?? 72;
+  const otherDepartures = prediction.alsoAt.length > 0
+    ? prediction.alsoAt.slice(0, 3).join(", ")
+    : "";
+
+  if (language === "zh") {
+    return [
+      `${prediction.agencyName} ${prediction.routeName}`,
+      `方向：${prediction.direction}`,
+      `到站：约 ${prediction.etaMin} 分钟`,
+      `站点：${prediction.stopName}`,
+      `班表时间：${prediction.scheduledDeparture}`,
+      `数据：本地 GTFS 静态班表，暂不是实时车辆定位`,
+      otherDepartures ? `其他即将到站：${otherDepartures}` : "",
+      `置信度：${confidence}%`,
+    ].filter(Boolean).join("\n");
+  }
+
+  if (language === "fr") {
+    return [
+      `${prediction.agencyName} ${prediction.routeName}`,
+      `Direction : ${prediction.direction}`,
+      `Arrivée : environ ${prediction.etaMin} min`,
+      `Arrêt : ${prediction.stopName}`,
+      `Départ prévu : ${prediction.scheduledDeparture}`,
+      "Données : horaire GTFS local, pas encore un suivi véhicule en direct",
+      otherDepartures ? `Autres départs proches : ${otherDepartures}` : "",
+      `Confiance : ${confidence} %`,
+    ].filter(Boolean).join("\n");
+  }
+
+  return [
+    `${prediction.agencyName} ${prediction.routeName}`,
+    `Direction: ${prediction.direction}`,
+    `ETA: about ${prediction.etaMin} min`,
+    `Stop: ${prediction.stopName}`,
+    `Scheduled departure: ${prediction.scheduledDeparture}`,
+    "Data: local GTFS schedule, not live vehicle tracking yet",
+    otherDepartures ? `Other upcoming options: ${otherDepartures}` : "",
+    `Confidence: ${confidence}%`,
+  ].filter(Boolean).join("\n");
+}
+
+async function answerRegionalTransitEta(
+  input: string,
+  context: TransitAssistantContext,
+): Promise<TransitAssistantAnswer | null> {
+  if (!isRegionalTransitQuestion(input, context)) return null;
+
+  const agencyId = detectRegionalAgencyId(input, context);
+  const routeName = extractRegionalRouteName(input, context);
+  const extractedStopQuery = extractRegionalStopQuery(input, context);
+  const regionalFollowUp = Boolean(context.regionalStopId) &&
+    /^(?:next|next one|the next one|what about(?: the)? next|how about(?: the)? next|那下一班呢|下一班呢?|那呢|这个呢)[?.!？。]*$/i.test(input.trim());
+  const stopQuery = regionalFollowUp ? undefined : extractedStopQuery;
+  const stopId = stopQuery ? undefined : context.regionalStopId;
+
+  if (!stopId && !stopQuery) {
+    const language = detectResponseLanguage(input);
+    return {
+      matchedIntent: "help",
+      confidence: 76,
+      context: { ...context, regionalAgencyId: agencyId, regionalRouteName: routeName, lastIntent: "help" },
+      text: language === "zh"
+        ? "可以。请告诉我区域公交的站点，例如：MiWay 26 at Square One，或 GO train from Oakville GO。"
+        : language === "fr"
+          ? "Oui. Indiquez l'arrêt, par exemple : MiWay 26 at Square One, ou GO train from Oakville GO."
+          : "Yes. Tell me the regional stop, for example: MiWay 26 at Square One, or GO train from Oakville GO.",
+    };
+  }
+
+  try {
+    const prediction = await getRegionalPrediction({
+      agencyId,
+      stopId,
+      stopQuery,
+      routeName,
+      headsign: context.regionalDirection,
+    });
+
+    return {
+      matchedIntent: "eta",
+      confidence: prediction.confidence,
+      context: {
+        ...context,
+        regionalAgencyId: prediction.agencyId,
+        regionalStopId: prediction.stopId,
+        regionalRouteName: prediction.routeName,
+        regionalDirection: prediction.direction,
+        currentTopic: prediction.stopName,
+        lastIntent: "eta",
+      },
+      text: formatRegionalPredictionAnswer(prediction, input),
+    };
+  } catch {
+    const language = detectResponseLanguage(input);
+    return {
+      matchedIntent: "help",
+      confidence: 68,
+      context: { ...context, regionalAgencyId: agencyId, regionalRouteName: routeName, lastIntent: "help" },
+      text: language === "zh"
+        ? "我没能找到这个区域公交站点或路线。你可以把机构、路线和站点一起发给我，例如：MiWay 26 at Square One。"
+        : language === "fr"
+          ? "Je n'ai pas trouvé cet arrêt ou cette ligne régionale. Essayez avec l'agence, la ligne et l'arrêt, par exemple : MiWay 26 at Square One."
+          : "I could not find that regional stop or route. Try including the agency, route, and stop, for example: MiWay 26 at Square One.",
+    };
+  }
 }
 
 function isRouteNumberOnlyDestination(query: string | undefined): number | undefined {
@@ -981,7 +1345,8 @@ function isHolidayQuestion(input: string): boolean {
 }
 
 function isGuideQuestion(input: string): boolean {
-  return /\b(?:guide|itinerary|recommend|recommendation|suggest|where\s+should\s+i\s+go|what\s+should\s+i\s+do|things?\s+to\s+do|places?\s+to\s+(?:go|visit|eat|see)|tourist|tourism|sightseeing|attractions?|restaurants?|food|eat|lunch|dinner|cafe|coffee|date|family|kids|rainy|rain\s+day|budget|cheap|free|half\s+day|one\s+day|day\s+trip|plan\s+my\s+day|plan\s+(?:a\s+)?day|plan\s+(?:a\s+)?(?:trip|travel|visit|tour)|plan\s+to\s+(?:travel|visit|tour)|travel\s+(?:in|around|through)\s+toronto|tour\s+(?:in|around)\s+toronto|travel\s+plan|trip\s+ideas?|where\s+to\s+eat|where\s+to\s+visit|visit\s+toronto)\b/i.test(input) ||
+  return isShoppingQuestion(input) ||
+    /\b(?:guide|itinerary|recommend|recommendation|suggest|where\s+should\s+i\s+go|what\s+should\s+i\s+do|things?\s+to\s+do|places?\s+to\s+(?:go|visit|eat|see)|tourist|tourism|sightseeing|attractions?|restaurants?|food|eat|lunch|dinner|cafe|coffee|date|family|kids|rainy|rain\s+day|budget|cheap|free|half\s+day|one\s+day|day\s+trip|plan\s+my\s+day|plan\s+(?:a\s+)?day|plan\s+(?:a\s+)?(?:trip|travel|visit|tour)|plan\s+to\s+(?:travel|visit|tour)|travel\s+(?:in|around|through)\s+toronto|tour\s+(?:in|around)\s+toronto|travel\s+plan|trip\s+ideas?|where\s+to\s+eat|where\s+to\s+visit|visit\s+toronto)\b/i.test(input) ||
     /\b(?:itinéraire|recommande|recommandation|suggère|où\s+aller|quoi\s+faire|à\s+visiter|restaurants?|manger|déjeuner|dîner|café|touriste|attractions?|musée|famille|enfants|pluie|budget|gratuit|demi-journée|journée|visiter\s+toronto)\b/i.test(input) ||
     /(?:攻略|行程|推荐|去哪|哪里玩|玩什么|吃什么|餐厅|景点|一日游|半日|亲子|情侣|下雨|预算|便宜|免费|附近|旅游|旅行|安排|计划|玩一天|半天|咖啡|午餐|晚餐|博物馆|室内|室外|多伦多怎么玩)/i.test(input);
 }
@@ -2393,7 +2758,9 @@ async function answerHolidayGreeting(input: string, context: TransitAssistantCon
       text,
     };
   } catch {
-    return null;
+    return understanding?.needsApi
+      ? localInfoUnavailableAnswer(query, context, understanding, displayInput)
+      : null;
   }
 }
 
@@ -2428,7 +2795,7 @@ function getGuideProfile(input: string, context: TransitAssistantContext, useCon
     /rain|indoor|museum|gallery|下雨|室内|博物馆|美术馆/.test(text) ? "indoor" :
     wantsFood ? "food" :
     /park|nature|walk|outdoor|公园|自然|散步|室外/.test(text) ? "parks" :
-    /shop|mall|shopping|购物|商场/.test(text) ? "shopping" :
+    isShoppingQuestion(input) || /shop|mall|shopping|supermarket|grocery|pharmacy|hardware|electronics|clothing|bookstore|购物|商场|超市|便利店|药店|五金店|电子产品店|服装店|书店/.test(text) ? "shopping" :
     /night|bar|evening|晚上|夜/.test(text) ? "night" :
     wantsAttractions ? "attractions" :
     useContext ? context.guideTopic ?? "general" : "general";
@@ -2497,6 +2864,548 @@ function getYelpRecommendationQuery(profile: ReturnType<typeof getGuideProfile>)
   if (profile.topic === "night") return "bars restaurants";
   if (profile.topic === "indoor") return "indoor attractions";
   return "restaurants attractions";
+}
+
+function extractShoppingNeed(input: string): string | undefined {
+  const cleaned = input.trim().replace(/[?.!。！？]+$/, "");
+  const patterns = [
+    /(?:buy|shop\s+for|looking\s+for|need\s+to\s+buy|where\s+can\s+i\s+buy|where\s+to\s+buy|get|find)\s+(.+)$/i,
+    /(?:买|购买|想买|要买|哪里可以买|去哪买|找)\s*([^，。！？?]+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+    if (!match?.[1]) continue;
+    const item = match[1]
+      .replace(/\b(?:near|nearby|around|close\s+to|by)\s+(?:me|here|my\s+location|current\s+location)\b/gi, " ")
+      .replace(/\b(?:near|nearby|around|close\s+to|by)\s+.+$/i, " ")
+      .replace(/\b(?:in|around)\s+toronto\b/gi, " ")
+      .replace(/\b(?:cheap|cheapest|affordable|closest|nearest|best|good|options?|places?|stores?|shops?)\b/gi, " ")
+      .replace(/(?:便宜|最便宜|最近|附近|选择|店|商店|地方|多伦多)/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (item.length >= 2) return item;
+  }
+
+  return undefined;
+}
+
+function isShoppingQuestion(input: string): boolean {
+  return /\b(?:buy|shop\s+for|shopping\s+for|where\s+can\s+i\s+buy|where\s+to\s+buy|looking\s+for|need\s+to\s+buy|stores?|shops?|supermarket|grocery|groceries|asian supermarket|market|convenience store|pharmacy|drugstore|hardware store|electronics store|department store|clothing store|bookstore|liquor store|pet store|furniture store|jewelry store|bike shop|bicycle store|mall)\b/i.test(input) ||
+    /(?:买|购买|想买|要买|哪里可以买|去哪买|商店|店里|购物|超市|亚洲超市|华人超市|便利店|药店|药房|五金店|电子产品店|电脑店|手机店|百货|服装店|书店|酒铺|宠物店|家具店|珠宝店|自行车店|商场|买菜|买药|买东西)/.test(input);
+}
+
+function isRecommendationFollowUp(input: string, context: TransitAssistantContext): boolean {
+  if (!context.lastRecommendations?.length) return false;
+  return isGenericFollowUp(input) ||
+    /\b(?:cheapest|cheap|affordable|lowest\s+price|closest|nearest|nearer|nearby|highest\s+rated|best\s+rated|best|rating|reviews?|open|another|different|more|plan|itinerary|route|which\s+one|compare|rank|sort|filter|indoor|outdoor|free)\b/i.test(input) ||
+    /(?:最便宜|便宜|最近|近一点|评分|评价|最高分|最好|哪个|比较|排序|筛选|换一个|更多|其他|别的|计划|行程|路线|室内|室外|免费)/.test(input);
+}
+
+function isLocalInfoLookupQuestion(input: string): boolean {
+  return isShoppingQuestion(input) ||
+    /\b(?:ticket|tickets|admission|entry fee|entrance fee|museum|amusement park|theme park|gas|fuel|petrol|gasoline|price|prices|cost|quote|compare|cheapest|how much|photo studio|photographer|passport photo|print shop|printing|lumber|wood|timber|sawmill|mill|supplier|distance|how far|nearest|closest|drive time|local service|supermarket|grocery|groceries|market|convenience store|pharmacy|drugstore|hardware store|electronics store|department store|clothing store|bookstore|liquor store|pet store|phone repair|optician|optical|laundry|laundromat|dry cleaner|barber|hair salon|gym|bank|atm|post office)\b/i.test(input) ||
+    /(?:门票|票价|入场|博物馆|游乐园|油价|加油|汽油|价格|多少钱|报价|比较|最便宜|照相馆|摄影|证件照|打印店|复印|木材|木材厂|木料|距离|多远|最近|开车多久|本地服务|超市|亚洲超市|华人超市|便利店|药店|药房|五金店|电子产品店|电脑店|手机店|百货|服装店|书店|酒铺|宠物店|家具店|珠宝店|自行车店|手机维修|修手机|眼镜店|配眼镜|洗衣店|干洗店|理发店|健身房|银行|取款机|邮局|寄件|商场|买菜|买药|买东西)/.test(input);
+}
+
+function sourceConfidenceLabel(confidence: string, language: ResponseLanguage) {
+  if (language === "zh") {
+    if (confidence === "high") return "高";
+    if (confidence === "medium") return "中";
+    if (confidence === "low") return "低";
+    return "需确认";
+  }
+  if (language === "fr") {
+    if (confidence === "high") return "élevée";
+    if (confidence === "medium") return "moyenne";
+    if (confidence === "low") return "faible";
+    return "à confirmer";
+  }
+  if (confidence === "high") return "high";
+  if (confidence === "medium") return "medium";
+  if (confidence === "low") return "low";
+  return "needs confirmation";
+}
+
+function localInfoTitle(info: LocalInfoResponse, language: ResponseLanguage) {
+  const intentLabels: Record<LocalInfoResponse["intent"], Record<ResponseLanguage, string>> = {
+    nearby_places: { en: "nearby options", zh: "附近选择", fr: "options proches" },
+    ticket_info: { en: "ticket / visitor-info options", zh: "门票/参观信息选择", fr: "billets / infos de visite" },
+    price_compare: { en: "price-comparison leads", zh: "价格比较线索", fr: "pistes de comparaison de prix" },
+    gas_price: { en: "nearby gas stations", zh: "附近加油站", fr: "stations-service proches" },
+    distance_route: { en: "distance-ranked options", zh: "按距离排序的选择", fr: "options triées par distance" },
+    retail: { en: "retail options", zh: "零售/购物选择", fr: "options de magasinage" },
+    local_service: { en: "local service options", zh: "本地服务选择", fr: "services locaux" },
+  };
+
+  const label = intentLabels[info.intent][language];
+  if (language === "zh") return `我查到这些${label}：`;
+  if (language === "fr") return `J'ai trouvé ces ${label} :`;
+  return `I found these ${label}:`;
+}
+
+function formatLocalInfoResult(result: LocalInfoResult, index: number, language: ResponseLanguage) {
+  const rating = result.rating !== undefined
+    ? language === "zh"
+      ? `${result.rating.toFixed(1)} 星${result.reviews ? `，${result.reviews} 条评价` : ""}`
+      : language === "fr"
+        ? `${result.rating.toFixed(1)} étoiles${result.reviews ? `, ${result.reviews} avis` : ""}`
+        : `${result.rating.toFixed(1)} stars${result.reviews ? `, ${result.reviews} reviews` : ""}`
+    : "";
+  const distance = result.distanceKm !== undefined
+    ? language === "zh"
+      ? `约 ${result.distanceKm.toFixed(1)} km`
+      : language === "fr"
+        ? `environ ${result.distanceKm.toFixed(1)} km`
+        : `${result.distanceKm.toFixed(1)} km away`
+    : "";
+  const drive = result.driveTimeMin !== undefined
+    ? language === "zh"
+      ? `开车约 ${result.driveTimeMin} 分钟`
+      : language === "fr"
+        ? `environ ${result.driveTimeMin} min en voiture`
+        : `${result.driveTimeMin} min drive`
+    : "";
+  const open = result.openNow !== undefined
+    ? language === "zh"
+      ? result.openNow ? "现在营业" : "现在可能未营业"
+      : language === "fr"
+        ? result.openNow ? "ouvert maintenant" : "probablement fermé maintenant"
+        : result.openNow ? "open now" : "likely closed now"
+    : "";
+  const price = result.priceInfo
+    ? language === "zh"
+      ? `价格信息：${result.priceInfo.value ?? "未直接提供"}（${sourceConfidenceLabel(result.priceInfo.confidence, language)}）`
+      : language === "fr"
+        ? `Prix : ${result.priceInfo.value ?? "non fourni directement"} (${sourceConfidenceLabel(result.priceInfo.confidence, language)})`
+        : `Price info: ${result.priceInfo.value ?? "not directly available"} (${sourceConfidenceLabel(result.priceInfo.confidence, language)})`
+    : result.priceLevel ? `Price level: ${result.priceLevel}` : "";
+  const source = language === "zh"
+    ? `来源：${result.sourceLabels.join(", ") || "local info"}；可信度：${sourceConfidenceLabel(result.sourceConfidence, language)}`
+    : language === "fr"
+      ? `Sources : ${result.sourceLabels.join(", ") || "local info"} ; confiance : ${sourceConfidenceLabel(result.sourceConfidence, language)}`
+      : `Sources: ${result.sourceLabels.join(", ") || "local info"}; confidence: ${sourceConfidenceLabel(result.sourceConfidence, language)}`;
+  const website = result.website
+    ? language === "zh"
+      ? `官网：${result.website}`
+      : language === "fr"
+        ? `Site : ${result.website}`
+        : `Website: ${result.website}`
+    : "";
+  const phone = result.phone
+    ? language === "zh"
+      ? `电话：${result.phone}`
+      : language === "fr"
+        ? `Téléphone : ${result.phone}`
+        : `Phone: ${result.phone}`
+    : "";
+
+  return [
+    `${index + 1}. ${result.name}`,
+    [result.address, distance, drive, rating, open].filter(Boolean).join(" - "),
+    price,
+    result.priceInfo?.note,
+    source,
+    website || phone,
+  ].filter(Boolean).join("\n   ");
+}
+
+function localInfoToRecommendations(info: LocalInfoResponse): AssistantRecommendationOption[] {
+  return info.results.map(result => ({
+    name: result.name,
+    address: result.address,
+    note: result.priceInfo?.note,
+    url: result.website ?? result.mapsUrl,
+    price: result.priceInfo?.value ?? result.priceLevel,
+    rating: result.rating,
+    reviews: result.reviews,
+    distanceKm: result.distanceKm,
+    categories: [result.category],
+  }));
+}
+
+function mergeConversationUnderstandingContext(
+  context: TransitAssistantContext,
+  understanding: ConversationUnderstandingResult,
+): TransitAssistantContext {
+  const mentionedPlaces = [
+    ...(context.mentionedPlaces ?? []),
+    understanding.entity,
+  ].filter((place): place is string => Boolean(place));
+  const uniqueMentionedPlaces = [...new Set(mentionedPlaces)].slice(-6);
+
+  return {
+    ...context,
+    currentTopic: understanding.entity ?? context.currentTopic,
+    currentLocalInfoIntent: understanding.intent !== "unknown"
+      ? understanding.intent
+      : context.currentLocalInfoIntent,
+    mentionedPlaces: uniqueMentionedPlaces,
+    date: understanding.time ?? context.date,
+    targetGroup: understanding.targetGroup ?? context.targetGroup,
+    compareBy: understanding.compareBy !== "none" ? understanding.compareBy : context.compareBy,
+    lastResolvedQuestion: understanding.resolvedQuestion,
+    missingSlots: understanding.missingSlots,
+    lastUnderstanding: understanding,
+  };
+}
+
+function localInfoIntentToConversationIntent(intent: LocalInfoResponse["intent"]): ConversationUnderstandingIntent {
+  if (intent === "ticket_info") return "ticket_price";
+  if (intent === "gas_price") return "gas_price";
+  if (intent === "price_compare") return "price_comparison";
+  if (intent === "distance_route") return "distance";
+  if (intent === "retail" || intent === "nearby_places") return "recommendation";
+  return "local_info";
+}
+
+function localInfoUnavailableAnswer(
+  query: string,
+  context: TransitAssistantContext,
+  understanding: ConversationUnderstandingResult,
+  displayInput: string,
+): TransitAssistantAnswer {
+  const language = detectResponseLanguage(displayInput);
+  const missingLocation = understanding.missingSlots.includes("location");
+  const reliabilityNote = (() => {
+    if (understanding.intent === "distance" || understanding.intent === "route") {
+      if (language === "zh") return "距离和路线需要可用的位置与路线数据。";
+      if (language === "fr") return "La distance et le trajet nécessitent une position et des données d'itinéraire disponibles.";
+      return "Distance and routing need an available location and route data.";
+    }
+    if (understanding.intent === "opening_hours") {
+      if (language === "zh") return "营业时间最好用 Google 商家资料或官方网页确认。";
+      if (language === "fr") return "Les horaires doivent être confirmés avec la fiche Google ou le site officiel.";
+      return "Opening hours are best confirmed with the Google listing or official website.";
+    }
+    if (understanding.intent === "ticket_price") {
+      if (language === "zh") return "门票价格通常要以官方网页为准，因为日期、年龄和优惠会影响价格。";
+      if (language === "fr") return "Les billets doivent être confirmés sur le site officiel, car la date, l'âge et les promotions changent le prix.";
+      return "Ticket prices should be confirmed on the official website because date, age group, and promotions can change the price.";
+    }
+    if (understanding.intent === "price_comparison") {
+      if (language === "zh") return "服务价格通常不统一，可能需要官网价格页或商家报价。";
+      if (language === "fr") return "Les prix de services varient souvent; il faut parfois une page de prix officielle ou un devis.";
+      return "Service prices are often not standardized and may require an official pricing page or quote.";
+    }
+    if (language === "zh") return "最可靠来源通常是官方网页、商家电话或实时数据源。";
+    if (language === "fr") return "La source la plus fiable est souvent le site officiel, un appel au commerce ou une donnée en direct.";
+    return "The most reliable source is usually the official website, business phone, or a live data source.";
+  })();
+  const contextWithUnderstanding = {
+    ...mergeConversationUnderstandingContext(context, understanding),
+    lastRecommendationQuery: query,
+  };
+  const text = language === "zh"
+    ? [
+      `我理解你的问题是：${query}`,
+      "",
+      missingLocation
+        ? "我还需要你的位置，才能准确比较距离或路线。"
+        : "我现在没有拿到可用的本地检索结果。",
+      reliabilityNote,
+      "",
+      "你可以补充位置、日期、人数/年龄，或者换一个更具体的地点名。",
+    ].join("\n")
+    : language === "fr"
+      ? [
+        `Je comprends la question comme : ${query}`,
+        "",
+        missingLocation
+          ? "Il me manque votre position pour comparer correctement la distance ou le trajet."
+          : "Je n'ai pas obtenu de résultat local exploitable pour l'instant.",
+        reliabilityNote,
+        "",
+        "Ajoutez un lieu, une date, le nombre de personnes/l'âge, ou un nom plus précis.",
+      ].join("\n")
+      : [
+        `I understand the question as: ${query}`,
+        "",
+        missingLocation
+          ? "I still need your location to compare distance or routes accurately."
+          : "I could not get usable local lookup results right now.",
+        reliabilityNote,
+        "",
+        "You can add a location, date, party size/age group, or a more specific place name.",
+      ].join("\n");
+
+  return {
+    matchedIntent: understanding.intent === "distance" || understanding.intent === "route"
+      ? "navigation"
+      : "help",
+    confidence: Math.max(62, understanding.confidence),
+    context: contextWithUnderstanding,
+    text,
+  };
+}
+
+async function answerLocalInfoQuestion(
+  input: string,
+  context: TransitAssistantContext,
+  understanding?: ConversationUnderstandingResult,
+  displayInput = input,
+): Promise<TransitAssistantAnswer | null> {
+  const query = understanding?.resolvedQuestion ?? input;
+  if (!isLocalInfoLookupQuestion(query) && !understanding?.needsApi) return null;
+  const language = detectResponseLanguage(displayInput);
+
+  try {
+    const info = await queryLocalInfo({
+      query,
+      lat: context.originPos?.[0],
+      lng: context.originPos?.[1],
+      language,
+      maxResults: 6,
+    });
+
+    if (info.results.length === 0) {
+      return understanding?.needsApi
+        ? localInfoUnavailableAnswer(query, context, understanding, displayInput)
+        : null;
+    }
+
+    const caveats = info.caveats.map(caveat => `- ${caveat}`).join("\n");
+    const sourceLine = language === "zh"
+      ? `数据层：${info.sourceSummary}`
+      : language === "fr"
+        ? `Sources utilisées : ${info.sourceSummary}`
+        : `Data layer: ${info.sourceSummary}`;
+    const caveatTitle = language === "zh" ? "注意：" : language === "fr" ? "À noter :" : "Notes:";
+    const followUp = language === "zh"
+      ? "你可以继续问：最便宜的、最近的、评分最高的，或帮我安排路线。"
+      : language === "fr"
+        ? "Vous pouvez ensuite demander : le moins cher, le plus proche, le mieux noté, ou fais-moi un trajet."
+        : "You can follow up with: cheapest, closest, highest rated, or make this a route.";
+
+    return {
+      matchedIntent: info.intent === "distance_route" ? "navigation" : "recommendation",
+      confidence: 88,
+      context: {
+        ...context,
+        currentTopic: info.results[0]?.name ?? understanding?.entity ?? context.currentTopic,
+        currentLocalInfoIntent: understanding?.intent && understanding.intent !== "unknown"
+          ? understanding.intent
+          : localInfoIntentToConversationIntent(info.intent),
+        mentionedPlaces: [
+          ...(context.mentionedPlaces ?? []),
+          ...info.results.slice(0, 3).map(result => result.name),
+        ].filter(Boolean).slice(-6),
+        date: understanding?.time ?? context.date,
+        targetGroup: understanding?.targetGroup ?? context.targetGroup,
+        compareBy: understanding?.compareBy && understanding.compareBy !== "none"
+          ? understanding.compareBy
+          : context.compareBy,
+        lastResolvedQuestion: query,
+        missingSlots: understanding?.missingSlots ?? context.missingSlots,
+        lastUnderstanding: understanding ?? context.lastUnderstanding,
+        lastRecommendationQuery: query,
+        lastRecommendationKind: info.intent === "ticket_info" ? "places" : info.intent === "distance_route" ? "plan" : "shopping",
+        lastRecommendations: localInfoToRecommendations(info),
+        lastIntent: info.intent === "distance_route" ? "navigation" : "recommendation",
+      },
+      text: [
+        localInfoTitle(info, language),
+        "",
+        info.results.slice(0, 6).map((result, index) => formatLocalInfoResult(result, index, language)).join("\n\n"),
+        "",
+        sourceLine,
+        "",
+        caveatTitle,
+        caveats,
+        "",
+        followUp,
+      ].join("\n"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function priceRank(option: AssistantRecommendationOption): number {
+  if (option.budget === "free") return 0;
+  if (option.budget === "low") return 1;
+  if (option.budget === "medium") return 2;
+  if (option.budget === "higher") return 3;
+  const dollars = option.price?.match(/\$/g)?.length;
+  return dollars && dollars > 0 ? dollars : 9;
+}
+
+function recommendationFollowUpMode(input: string): "cheapest" | "nearest" | "rating" | "plan" | "more" | "default" {
+  if (/\b(?:cheapest|cheap|affordable|lowest\s+price|free)\b/i.test(input) || /(?:最便宜|便宜|实惠|免费|低价)/.test(input)) return "cheapest";
+  if (/\b(?:closest|nearest|nearer|nearby|walking\s+distance)\b/i.test(input) || /(?:最近|近一点|附近|步行)/.test(input)) return "nearest";
+  if (/\b(?:highest\s+rated|best\s+rated|rating|reviews?|best)\b/i.test(input) || /(?:评分|评价|最高分|最好)/.test(input)) return "rating";
+  if (/\b(?:plan|itinerary|route|schedule|day|afternoon|evening)\b/i.test(input) || /(?:计划|行程|路线|安排|一天|下午|晚上)/.test(input)) return "plan";
+  if (/\b(?:another|different|more|other|else)\b/i.test(input) || /(?:换一个|更多|其他|别的|还有)/.test(input)) return "more";
+  return "default";
+}
+
+function formatRecommendationOption(
+  option: AssistantRecommendationOption,
+  index: number,
+  language: ResponseLanguage,
+): string {
+  const meta = [
+    option.address,
+    option.distanceKm !== undefined
+      ? language === "zh"
+        ? `约 ${option.distanceKm.toFixed(1)} km`
+        : language === "fr"
+          ? `environ ${option.distanceKm.toFixed(1)} km`
+          : `${option.distanceKm.toFixed(1)} km away`
+      : "",
+    option.price || option.budget,
+    option.rating !== undefined
+      ? language === "zh"
+        ? `${option.rating.toFixed(1)} 星${option.reviews ? `，${option.reviews} 条评价` : ""}`
+        : language === "fr"
+          ? `${option.rating.toFixed(1)} étoiles${option.reviews ? `, ${option.reviews} avis` : ""}`
+          : `${option.rating.toFixed(1)} stars${option.reviews ? `, ${option.reviews} reviews` : ""}`
+      : "",
+  ].filter(Boolean).join(" - ");
+  const note = option.note ? `\n   ${language === "zh" ? "理由" : language === "fr" ? "Pourquoi" : "Why"}: ${option.note}` : "";
+  const link = option.url ? `\n   ${option.url}` : "";
+  return `${index + 1}. ${option.name}${meta ? `\n   ${meta}` : ""}${note}${link}`;
+}
+
+function formatRecommendationOptions(
+  options: AssistantRecommendationOption[],
+  language: ResponseLanguage,
+): string {
+  return options
+    .slice(0, 5)
+    .map((option, index) => formatRecommendationOption(option, index, language))
+    .join("\n\n");
+}
+
+function yelpToRecommendationOption(item: YelpRecommendation): AssistantRecommendationOption {
+  return {
+    name: item.name,
+    url: item.url,
+    price: item.price,
+    rating: item.rating,
+    reviews: item.reviews,
+    categories: item.categories,
+    note: item.snippet,
+  };
+}
+
+function guideToRecommendationOption(
+  place: GuidePlace,
+  distanceKm?: number,
+  language: ResponseLanguage = "en",
+): AssistantRecommendationOption {
+  return {
+    name: place.name,
+    address: place.address,
+    note: language === "zh" ? place.noteZh : language === "fr" ? place.noteFr : place.note,
+    distanceKm,
+    categories: [place.category],
+    budget: place.budget,
+    destinationQuery: place.destinationQuery,
+  };
+}
+
+function buildRecommendationContext(
+  context: TransitAssistantContext,
+  profile: ReturnType<typeof getGuideProfile>,
+  query: string,
+  kind: TransitAssistantContext["lastRecommendationKind"],
+  options: AssistantRecommendationOption[],
+): TransitAssistantContext {
+  return {
+    ...context,
+    guideArea: profile.area,
+    guideDuration: profile.duration,
+    guideAudience: profile.audience,
+    guideBudget: profile.budget,
+    guideTopic: profile.topic,
+    lastRecommendationQuery: query,
+    lastRecommendationKind: kind,
+    lastRecommendations: options.slice(0, 8),
+    lastIntent: kind === "plan" ? "guide" : "recommendation",
+  };
+}
+
+function answerRecommendationFollowUp(
+  input: string,
+  context: TransitAssistantContext,
+): TransitAssistantAnswer | null {
+  const previous = context.lastRecommendations;
+  if (!previous?.length) return null;
+
+  const language = detectResponseLanguage(input);
+  const mode = recommendationFollowUpMode(input);
+  const sorted = [...previous].sort((a, b) => {
+    if (mode === "cheapest") return priceRank(a) - priceRank(b);
+    if (mode === "nearest") return (a.distanceKm ?? 999) - (b.distanceKm ?? 999);
+    if (mode === "rating") return (b.rating ?? 0) - (a.rating ?? 0) || (b.reviews ?? 0) - (a.reviews ?? 0);
+    return 0;
+  });
+  const visible = mode === "more" ? sorted.slice(1, 6) : sorted.slice(0, 5);
+
+  if (mode === "plan") {
+    const lines = visible.slice(0, 4).map((option, index) => {
+      const label = language === "zh"
+        ? ["先去", "然后", "中途", "最后"][index] ?? `第 ${index + 1} 站`
+        : language === "fr"
+          ? ["Commencez", "Ensuite", "Pause", "Terminez"][index] ?? `Arrêt ${index + 1}`
+          : ["Start", "Then", "Break", "Finish"][index] ?? `Stop ${index + 1}`;
+      return `${index + 1}. ${label}: ${option.name}${option.address ? `\n   ${option.address}` : ""}${option.note ? `\n   ${option.note}` : ""}`;
+    }).join("\n\n");
+    const title = language === "zh"
+      ? "可以，把上一轮选择整理成这样："
+      : language === "fr"
+        ? "Oui, je l'organiserais comme ceci :"
+        : "Yes. I would turn those options into this plan:";
+    const before = language === "zh"
+      ? "出发前：确认营业时间、库存、门票或预约。"
+      : language === "fr"
+        ? "Avant de partir : vérifiez les horaires, le stock, les billets ou les réservations."
+        : "Before going: check hours, stock, tickets, or reservations.";
+    return {
+      matchedIntent: "guide",
+      confidence: 88,
+      context: { ...context, lastRecommendations: visible, lastIntent: "guide" },
+      text: `${title}\n\n${lines}\n\n${before}`,
+    };
+  }
+
+  const title = language === "zh"
+    ? mode === "cheapest"
+      ? "按最便宜/预算友好排序："
+      : mode === "nearest"
+        ? "按最近排序："
+        : mode === "rating"
+          ? "按评分排序："
+          : "可以，换一组/继续看："
+    : language === "fr"
+      ? mode === "cheapest"
+        ? "Trié par prix le plus bas / budget :"
+        : mode === "nearest"
+          ? "Trié par distance :"
+          : mode === "rating"
+            ? "Trié par note :"
+            : "Voici d'autres options :"
+      : mode === "cheapest"
+        ? "Sorted by cheapest / most budget-friendly:"
+        : mode === "nearest"
+          ? "Sorted by nearest:"
+          : mode === "rating"
+            ? "Sorted by highest rated:"
+            : "Here are more options:";
+
+  const caveat = language === "zh"
+    ? "价格和库存可能变化，出发前最好再确认。"
+    : language === "fr"
+      ? "Les prix et la disponibilité peuvent changer; vérifiez avant de partir."
+      : "Prices and availability can change, so check before you go.";
+
+  return {
+    matchedIntent: "recommendation",
+    confidence: 88,
+    context: { ...context, lastRecommendations: visible, lastIntent: "recommendation" },
+    text: `${title}\n\n${formatRecommendationOptions(visible, language)}\n\n${caveat}`,
+  };
 }
 
 function formatYelpRecommendationList(items: YelpRecommendation[]) {
@@ -2656,6 +3565,15 @@ async function answerGuideQuestion(
     !/\b(?:guide|itinerary|recommend|recommendation|suggest|things?\s+to\s+do|places?\s+to\s+(?:go|visit|eat|see)|plan\s+my\s+day)\b|(?:攻略|行程|推荐|去哪|哪里玩|玩什么)/i.test(input);
   const focus = await resolveAssistantLocationFocus(input, context);
   const profile = getGuideProfile(input, context, shouldInheritGuideContext);
+  const shoppingNeed = extractShoppingNeed(input);
+  const recommendationQuery = shoppingNeed
+    ? `${shoppingNeed} stores`
+    : getYelpRecommendationQuery(profile);
+  const recommendationKind: TransitAssistantContext["lastRecommendationKind"] = shoppingNeed
+    ? "shopping"
+    : profile.topic === "food" || profile.topic === "shopping"
+      ? profile.topic
+      : "places";
   const recommendationCategories = getRecommendationCategories(profile);
   const candidates = GUIDE_PLACES.filter(place => {
     if (profile.topic === "food") return place.category === "food";
@@ -2679,7 +3597,7 @@ async function answerGuideQuestion(
         : undefined;
     const yelpItems = yelpLocation
       ? await searchYelpRecommendations({
-        query: getYelpRecommendationQuery(profile),
+        query: recommendationQuery,
         lat: focus?.source === "current" ? focus.pos?.[0] : undefined,
         lng: focus?.source === "current" ? focus.pos?.[1] : undefined,
         location: yelpLocation,
@@ -2687,19 +3605,33 @@ async function answerGuideQuestion(
       : [];
 
     if (yelpItems.length > 0) {
+      const options = yelpItems.map(yelpToRecommendationOption);
+      const title = shoppingNeed
+        ? language === "zh"
+          ? `我找到几个可以买 ${shoppingNeed} 的选择：`
+          : language === "fr"
+            ? `J'ai trouvé quelques options pour acheter ${shoppingNeed} :`
+            : `I found a few options for buying ${shoppingNeed}:`
+        : language === "zh"
+          ? "我找到这些推荐："
+          : language === "fr"
+            ? "J'ai trouvé ces recommandations :"
+            : "I found these recommendations:";
+      const beforeGoing = language === "zh"
+        ? "出发前：请确认营业时间、库存、价格和近期评价。"
+        : language === "fr"
+          ? "Avant de partir : vérifiez les horaires, le stock, les prix et les avis récents."
+          : "Before going: check hours, availability, prices, and recent reviews.";
+      const nextStep = language === "zh"
+        ? "你还可以继续问：最便宜的、最近的、评分最高的，或者帮我安排路线。"
+        : language === "fr"
+          ? "Vous pouvez ensuite demander : le moins cher, le plus proche, le mieux noté, ou fais-moi un plan."
+          : "You can follow up with: cheapest, closest, highest rated, or make this a plan.";
       return {
         matchedIntent: "recommendation",
         confidence: 90,
-        context: {
-          ...context,
-          guideArea: profile.area,
-          guideDuration: profile.duration,
-          guideAudience: profile.audience,
-          guideBudget: profile.budget,
-          guideTopic: profile.topic,
-          lastIntent: "recommendation",
-        },
-        text: `I found these recommendations:${locationText}\n\n${formatYelpRecommendationList(yelpItems)}\n\nBefore going: check hours, availability, and recent reviews.`,
+        context: buildRecommendationContext(context, profile, recommendationQuery, recommendationKind, options),
+        text: `${title}${locationText}\n\n${formatRecommendationOptions(options, language)}\n\n${beforeGoing}\n\n${nextStep}`,
       };
     }
 
@@ -2711,26 +3643,28 @@ async function answerGuideQuestion(
       profile.topic === "shopping" ? "shopping recommendations" :
       profile.topic === "attractions" ? "attraction recommendations" :
       "Toronto recommendations";
-    const list = rows
-      .map(({ place, distanceKm }, index) => {
-        const distanceText = distanceKm === undefined ? "" : `\n   Distance from focus: ${distanceKm.toFixed(1)} km`;
-        return `${index + 1}. ${place.name}\n   ${place.address}${distanceText}\n   Why: ${place.note}`;
-      })
-      .join("\n\n");
+    const options = rows.map(({ place, distanceKm }) => guideToRecommendationOption(place, distanceKm, language));
+    const fallbackBeforeGoing = language === "zh"
+      ? "出发前：我目前没有实时评分，所以建议确认营业时间、库存、价格和近期评价。"
+      : language === "fr"
+        ? "Avant de partir : je n'ai pas les notes en direct ici, donc vérifiez les horaires, le stock, les prix et les avis récents."
+        : "Before going: I do not have live ratings in the current map data yet, so check hours, reservations, and recent reviews before you go.";
+    const fallbackNextStep = language === "zh"
+      ? "你还可以继续问：最近的、最便宜的、评分最高的，或者帮我安排成路线。"
+      : language === "fr"
+        ? "Vous pouvez ensuite demander : le plus proche, le moins cher, le mieux noté, ou transforme ça en plan."
+        : "You can follow up with: closest, cheapest, highest rated, or make this a plan.";
+    const fallbackTitle = language === "zh"
+      ? `这里有几个${profile.topic === "shopping" ? "购物" : "多伦多"}推荐：`
+      : language === "fr"
+        ? `Voici des recommandations ${profile.topic === "shopping" ? "magasinage" : "Toronto"} :`
+        : `Here are ${title}:`;
 
     return {
       matchedIntent: "recommendation",
       confidence: 88,
-      context: {
-        ...context,
-        guideArea: profile.area,
-        guideDuration: profile.duration,
-        guideAudience: profile.audience,
-        guideBudget: profile.budget,
-        guideTopic: profile.topic,
-        lastIntent: "recommendation",
-      },
-      text: `Here are ${title}:${locationText}\n\n${list}\n\nBefore going: I do not have live ratings in the current map data yet, so check hours, reservations, and recent reviews before you go.`,
+      context: buildRecommendationContext(context, profile, recommendationQuery, recommendationKind, options),
+      text: `${fallbackTitle}${locationText}\n\n${formatRecommendationOptions(options, language)}\n\n${fallbackBeforeGoing}\n\n${fallbackNextStep}`,
     };
   }
   const route = buildGuideRoute(candidates, profile);
@@ -2785,6 +3719,9 @@ async function answerGuideQuestion(
       guideAudience: profile.audience,
       guideBudget: profile.budget,
       guideTopic: profile.topic,
+      lastRecommendationQuery: `${profile.topic} ${profile.area ?? "Toronto"}`,
+      lastRecommendationKind: "plan",
+      lastRecommendations: route.map(place => guideToRecommendationOption(place, undefined, language)),
       lastIntent: "guide",
     },
     text: `${intro}\n${fitLine}${locationText}\n\n${planLabel}\n${routeText}${budgetText}\n\n${transitHint}\n\n${beforeGoing}${navigationHint}`,
@@ -3258,6 +4195,7 @@ function shouldKeepStructuredAnswer(answer: TransitAssistantAnswer): boolean {
     "weather",
     "events",
     "holidays",
+    "navigation",
     "recommendation",
     "guide",
     "help",
@@ -3416,25 +4354,47 @@ async function buildTransitAssistantAnswer(
     return answerCurrentTimeQuestion(q, context);
   }
 
-  const classifiedIntent = await classifyTransitAssistantIntent(q, context);
+  const understanding = await resolveConversationUnderstanding(q, context);
+  const resolvedQ = understanding.isFollowUp ? understanding.resolvedQuestion : q;
+  const understoodContext = mergeConversationUnderstandingContext(context, understanding);
+
+  const classifiedIntent = await classifyTransitAssistantIntent(resolvedQ, understoodContext);
   const llmIntent = classifiedIntent?.intent;
-  const scopedContext = withClassifiedAroundScope(context, classifiedIntent);
-  const wantsRecommendation = llmIntent === "recommendation";
-  const wantsGuide = wantsRecommendation || isGuideQuestion(q) || llmIntent === "guide" || isGuideFollowUp(q, context);
-  const destinationQueryForNavigation = extractDestinationQuery(q);
-  const navigationVerbRequested = /\b(?:navigate|directions?|route\s+me|get\s+me|take\s+me|how\s+(?:do|can|should)\s+i\s+get|how\s+to\s+get|go\s+to|travel\s+to|transit\s+to|trip\s+to)\b/i.test(q) ||
-    /(?:导航|路线|怎么去|怎么到|如何去|如何到|前往|从.+到|出行方式|公交怎么走|坐车去)/i.test(q);
+  const scopedContext = withClassifiedAroundScope(understoodContext, classifiedIntent);
+  const recommendationFollowUpAnswer = isRecommendationFollowUp(q, scopedContext)
+    ? answerRecommendationFollowUp(q, scopedContext)
+    : null;
+  if (recommendationFollowUpAnswer) return recommendationFollowUpAnswer;
+
+  const wantsRecommendation = llmIntent === "recommendation" || isShoppingQuestion(resolvedQ);
+  const wantsGuide = wantsRecommendation || isGuideQuestion(resolvedQ) || llmIntent === "guide" || isGuideFollowUp(q, scopedContext);
+  const destinationQueryForNavigation = extractDestinationQuery(resolvedQ);
+  const navigationVerbRequested = /\b(?:navigate|directions?|route\s+me|get\s+me|take\s+me|how\s+(?:do|can|should)\s+i\s+get|how\s+to\s+get|go\s+to|travel\s+to|transit\s+to|trip\s+to)\b/i.test(resolvedQ) ||
+    /(?:导航|路线|怎么去|怎么到|如何去|如何到|前往|从.+到|出行方式|公交怎么走|坐车去)/i.test(resolvedQ);
   const explicitNavigationQuestion =
-    (!wantsGuide && isNavigationQuestion(q)) ||
-    (Boolean(destinationQueryForNavigation) && navigationVerbRequested && !/\b(?:things?\s+to\s+do|where\s+to|what\s+to|recommend|guide|itinerary|restaurants?|attractions?)\b/i.test(q)) ||
-    (llmIntent === "navigation" && (destinationQueryForNavigation !== undefined || (context.destinationId && isDestinationFollowUp(q))));
+    (!wantsGuide && isNavigationQuestion(resolvedQ)) ||
+    (Boolean(destinationQueryForNavigation) && navigationVerbRequested && !/\b(?:things?\s+to\s+do|where\s+to|what\s+to|recommend|guide|itinerary|restaurants?|attractions?)\b/i.test(resolvedQ)) ||
+    (llmIntent === "navigation" && (destinationQueryForNavigation !== undefined || (scopedContext.destinationId && isDestinationFollowUp(q))));
+
+  const localInfoAnswer = await answerLocalInfoQuestion(resolvedQ, scopedContext, understanding, q);
+  if (localInfoAnswer) return localInfoAnswer;
+  if (understanding.needsApi && [
+    "ticket_price",
+    "opening_hours",
+    "distance",
+    "gas_price",
+    "price_comparison",
+    "local_info",
+  ].includes(understanding.intent)) {
+    return localInfoUnavailableAnswer(resolvedQ, scopedContext, understanding, q);
+  }
 
   if (wantsGuide) {
-    return await answerGuideQuestion(q, scopedContext, wantsRecommendation);
+    return await answerGuideQuestion(resolvedQ, scopedContext, wantsRecommendation);
   }
 
   if (explicitNavigationQuestion) {
-    const destinationAnswer = await answerDestinationQuestion(q, scopedContext);
+    const destinationAnswer = await answerDestinationQuestion(resolvedQ, scopedContext);
     if (destinationAnswer) return destinationAnswer;
   }
 
@@ -3488,6 +4448,9 @@ async function buildTransitAssistantAnswer(
       text: localizedCapabilityText(language),
     };
   }
+
+  const regionalTransitAnswer = await answerRegionalTransitEta(q, scopedContext);
+  if (regionalTransitAnswer) return regionalTransitAnswer;
 
   try {
     const explicitRoute = findRouteInText(q);

@@ -1,4 +1,4 @@
-# Responsive TTC Transit App
+# Milk Transit
 
 This project is a TTC transit prototype with:
 
@@ -16,7 +16,7 @@ This project is a TTC transit prototype with:
 - **Destination search and recommendations**: supports AI-style search for TTC stops, addresses, landmarks, tourist attractions, restaurants, parks, and shopping destinations. The search page also shows location-aware recommendations and recent search history.
 - **Trip planning and navigation**: supports destination routing by transit, walking, driving, and biking through OpenTripPlanner when available, with route steps, ETA, destination pins, and map centering for selected destinations.
 - **Account and memory support**: users can sign up, log in, log out, and keep recent search history locally for faster repeated searches.
-- **Milk bot transit assistant**: answers TTC questions about arrivals, stops, route delays, nearby options, traffic, weather, construction, events, holidays, crowding, route terminals, and navigation.
+- **Milk Transit assistant**: answers TTC and GTA transit questions about arrivals, stops, route delays, nearby options, traffic, weather, construction, events, holidays, crowding, route terminals, and navigation.
 - **Trip-planning chatbot support**: understands natural language trip requests such as planning a trip tomorrow to a destination, keeps destination context for follow-up questions, and uses Gemini for intent classification and answer verification when configured.
 - **Toronto guide chatbot support**: answers broad Toronto itinerary and recommendation questions, including attractions, food, restaurants, parks, shopping, rainy-day plans, family-friendly ideas, budget plans, and follow-up adjustments.
 - **Multilingual chatbot responses**: replies in the user's language for English, Chinese, and French questions, and formats longer answers with readable line breaks and numbered lists.
@@ -87,6 +87,14 @@ npm run download:gtha-gtfs
 
 The script writes GTFS zips into `data/otp`, where OTP can build them into one graph together with the OSM file. It does not create mock transit data.
 
+To enable chatbot schedule lookups for the regional agencies in `config/regional-transit-feeds.json`, build the local regional arrivals database after downloading feeds:
+
+```bash
+npm run import:regional-gtfs
+```
+
+This creates `data/regional-arrivals.sqlite` from GO Transit / UP Express, MiWay, YRT/Viva, Brampton Transit, and any other enabled non-TTC feeds. These answers are static GTFS schedule estimates; TTC remains the only agency with GTFS-Realtime arrival updates unless another live feed is added.
+
 ## Environment
 
 Important `.env` values:
@@ -103,8 +111,13 @@ OTP_GTFS_SERVICE_START_DATE=2026-06-21
 ROUTING_PROVIDER=otp
 GTHA_GTFS_FEEDS_FILE=./config/gtha-gtfs-feeds.json
 GTHA_GTFS_OUTPUT_DIR=./data/otp
+REGIONAL_TRANSIT_FEEDS_FILE=./config/regional-transit-feeds.json
+REGIONAL_TRANSIT_ARRIVALS_DB_PATH=./data/regional-arrivals.sqlite
 TICKETMASTER_API_KEY=optional_ticketmaster_discovery_api_key
 TOMTOM_API_KEY=optional_tomtom_traffic_api_key
+GOOGLE_MAPS_API_KEY=optional_backend_google_maps_platform_key
+RESEND_API_KEY=optional_resend_feedback_email_key
+FEEDBACK_FROM_EMAIL="Milk Transit Feedback <onboarding@resend.dev>"
 ```
 
 `GEMINI_API_KEY` is used only by the Express API server for chatbot intent classification and answer verification/correction. Do not put this key in a `VITE_` variable, because Vite exposes those values to the browser bundle.
@@ -117,11 +130,15 @@ TOMTOM_API_KEY=optional_tomtom_traffic_api_key
 
 `GTHA_GTFS_FEEDS_FILE` points to your local list of official GTFS feed URLs. Use it with `npm run download:gtha-gtfs` to download real agency feeds into the OTP graph directory. The app will route across agencies only after OTP is rebuilt with those feeds.
 
-`GOOGLE_MAPS_API_KEY` is optional and only used if you explicitly set `ROUTING_PROVIDER=google` or `ROUTING_PROVIDER=auto`. Leave it blank for the self-hosted OTP setup.
+`REGIONAL_TRANSIT_ARRIVALS_DB_PATH` points to the local static schedule database used by the chatbot for non-TTC regional ETA questions, such as MiWay, YRT/Viva, GO Transit / UP Express, and Brampton Transit. Rebuild it with `npm run import:regional-gtfs` after refreshing regional GTFS zips.
+
+`GOOGLE_MAPS_API_KEY` is a backend-only key used by the local information retrieval layer for Google Places and Google Routes lookups, such as nearby services, ticket-info leads, distance-ranked businesses, and drive-time estimates. It is also optional for paid Google routing if you explicitly set `ROUTING_PROVIDER=google` or `ROUTING_PROVIDER=auto`. Do not put this key in a `VITE_` variable.
 
 `TICKETMASTER_API_KEY` enables live Toronto sports, concert, festival, and entertainment event lookups through the Ticketmaster Discovery API. If it is not set, the app falls back to local major-venue pressure estimates for Toronto.
 
 `TOMTOM_API_KEY` enables live Toronto traffic flow and incident lookups through the TomTom Traffic API. The prediction algorithm uses live road speed, free-flow speed, road closure, accident, congestion, and roadwork signals when available. If it is not set or the API request fails, the app falls back to the local time-of-day, route-demand, and downtown-pressure traffic estimate.
+
+`RESEND_API_KEY` enables the in-app feedback form to send email to the configured site owner. Keep this value server-side only. `FEEDBACK_FROM_EMAIL` can stay on Resend's onboarding sender for testing, or use a verified sender domain for production.
 
 Holiday awareness uses the public Nager.Date holiday API for Canadian/Ontario public holidays. If that request fails, the app falls back to a small local set of fixed-date Ontario holidays.
 

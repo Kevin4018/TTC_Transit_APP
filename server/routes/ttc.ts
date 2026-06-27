@@ -11,6 +11,7 @@ import {
 } from "../services/ttcService";
 import {
   classifyTransitAssistantIntent,
+  resolveConversationUnderstanding,
   verifyTransitAssistantAnswer,
   type TransitAssistantIntent,
   type TransitAssistantIntentContext,
@@ -243,6 +244,22 @@ router.post("/assistant/intent", async (req, res, next) => {
     }
 
     res.json(await classifyTransitAssistantIntent(input, context));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/assistant/resolve-context", async (req, res, next) => {
+  try {
+    const input = String(req.body?.input ?? "").trim();
+    const context = (req.body?.context ?? {}) as TransitAssistantIntentContext;
+
+    if (!input) {
+      res.status(400).json({ message: "input is required" });
+      return;
+    }
+
+    res.json(await resolveConversationUnderstanding(input, context));
   } catch (error) {
     next(error);
   }
