@@ -1412,7 +1412,7 @@ function isEtaQuestion(input: string): boolean {
 }
 
 function isCrowdingQuestion(input: string): boolean {
-  return /\b(?:crowd|busy|full|passenger|load|packed|space|seats?)\b/i.test(input);
+  return /\b(?:crowd|crowded|busy|full|passenger|load|packed|space|seats?)\b/i.test(input);
 }
 
 function isRouteTerminalQuestion(input: string): boolean {
@@ -2932,6 +2932,27 @@ function isLocalInfoLookupQuestion(input: string): boolean {
     /(?:门票|票价|入场|博物馆|游乐园|油价|加油|汽油|价格|多少钱|报价|比较|最便宜|照相馆|摄影|证件照|打印店|复印|木材|木材厂|木料|距离|多远|最近|开车多久|本地服务|超市|亚洲超市|华人超市|便利店|药店|药房|五金店|电子产品店|电脑店|手机店|百货|服装店|书店|酒铺|宠物店|家具店|珠宝店|自行车店|手机维修|修手机|眼镜店|配眼镜|洗衣店|干洗店|理发店|健身房|银行|取款机|邮局|寄件|商场|买菜|买药|买东西)/.test(input);
 }
 
+const LOCAL_INFO_UNDERSTANDING_INTENTS = new Set<ConversationUnderstandingIntent>([
+  "ticket_price",
+  "opening_hours",
+  "distance",
+  "gas_price",
+  "price_comparison",
+  "local_info",
+  "recommendation",
+]);
+
+function isTransitStatusQuestion(input: string): boolean {
+  if (isCrowdingQuestion(input) || isDelayQuestion(input) || isEtaQuestion(input) || isRouteTerminalQuestion(input)) {
+    return true;
+  }
+
+  if (!findRouteInText(input)) return false;
+
+  return /\b(?:crowd|crowded|busy|full|packed|seat|seats|passenger|load|eta|arriv|arrival|coming|next|delay|late|slow)\b/i.test(input) ||
+    /(?:拥挤|挤|人多|座位|到站|什么时候到|下一班|延误|晚点|慢)/.test(input);
+}
+
 function sourceConfidenceLabel(confidence: string, language: ResponseLanguage) {
   if (language === "zh") {
     if (confidence === "high") return "高";
@@ -3180,7 +3201,12 @@ async function answerLocalInfoQuestion(
   displayInput = input,
 ): Promise<TransitAssistantAnswer | null> {
   const query = understanding?.resolvedQuestion ?? input;
-  if (!isLocalInfoLookupQuestion(query) && !understanding?.needsApi) return null;
+  const allowsUnderstandingLookup = Boolean(
+    understanding?.needsApi &&
+    LOCAL_INFO_UNDERSTANDING_INTENTS.has(understanding.intent),
+  );
+  if (isTransitStatusQuestion(query)) return null;
+  if (!isLocalInfoLookupQuestion(query) && !allowsUnderstandingLookup) return null;
   const language = detectResponseLanguage(displayInput);
 
   try {
@@ -4309,10 +4335,40 @@ function localizedRouteNeedsStop(routeId: number, input: string, hasContextStop:
   ].join("\n");
 }
 
+function localizedRouteCrowdingUnavailable(routeId: number, input: string): string {
+  const language = detectResponseLanguage(input);
+  if (language === "zh") {
+    return [
+      `我现在不能实时检查 ${routeId} 的车厢拥挤程度。`,
+      "",
+      "拥挤程度会按具体车辆、站点、方向和时间变化。",
+      "",
+      `如果你想查到站/延误，可以问：${routeId} at College 什么时候到？`,
+    ].join("\n");
+  }
+  if (language === "fr") {
+    return [
+      `Je ne peux pas vérifier l'achalandage en direct de la ligne ${routeId} pour le moment.`,
+      "",
+      "L'achalandage dépend du véhicule, de l'arrêt, de la direction et de l'heure.",
+      "",
+      `Pour les arrivées ou retards, essayez : "when is ${routeId} at College?"`,
+    ].join("\n");
+  }
+  return [
+    `I cannot check live crowding for route ${routeId} right now.`,
+    "",
+    "Crowding depends on the exact vehicle, stop, direction, and time.",
+    "",
+    `For arrivals or delays, try: when is ${routeId} at College?`,
+  ].join("\n");
+}
+
 function shouldKeepStructuredAnswer(answer: TransitAssistantAnswer): boolean {
   return [
     "eta",
     "delay",
+    "crowding",
     "traffic",
     "weather",
     "events",
@@ -4459,6 +4515,20 @@ async function buildTransitAssistantAnswer(
     return answerGreeting(q, context);
   }
 
+  const earlyCrowdingRouteBeforeClarification = isCrowdingQuestion(q) ? findRouteInText(q) : undefined;
+  if (earlyCrowdingRouteBeforeClarification && !context.stopId) {
+    return {
+      matchedIntent: "crowding",
+      confidence: 86,
+      context: {
+        ...context,
+        routeId: earlyCrowdingRouteBeforeClarification,
+        lastIntent: "crowding",
+      },
+      text: localizedRouteCrowdingUnavailable(earlyCrowdingRouteBeforeClarification, q),
+    };
+  }
+
   const unknownRouteAnswer = await answerUnknownRouteClarification(q, context);
   if (unknownRouteAnswer) return unknownRouteAnswer;
 
@@ -4526,7 +4596,7 @@ async function buildTransitAssistantAnswer(
   const wantsWeather = !wantsEvents && !wantsHolidays && (llmIntent ? llmIntent === "weather" : isWeatherQuestion(q) || (scopedContext.lastIntent === "weather" && (isTimeFollowUp(q) || followUp)));
   const wantsTraffic = !wantsEvents && !wantsHolidays && (llmIntent ? llmIntent === "traffic" : isTrafficQuestion(q) || (scopedContext.lastIntent === "traffic" && (isTimeFollowUp(q) || followUp)));
   const wantsDelay = llmIntent ? llmIntent === "delay" : isDelayQuestion(q) || (scopedContext.lastIntent === "delay" && followUp);
-  const wantsCrowding = llmIntent ? llmIntent === "crowding" : isCrowdingQuestion(q) || (scopedContext.lastIntent === "crowding" && followUp);
+  const wantsCrowding = isCrowdingQuestion(q) || (llmIntent ? llmIntent === "crowding" : scopedContext.lastIntent === "crowding" && followUp);
   const wantsEta = llmIntent ? llmIntent === "eta" : isEtaQuestion(q) || (hasRouteContext(scopedContext) && (scopedContext.lastIntent === "eta" || followUp));
 
   const terminalAnswer = answerRouteTerminalQuestion(q, context);
@@ -4573,6 +4643,20 @@ async function buildTransitAssistantAnswer(
 
   const regionalTransitAnswer = await answerRegionalTransitEta(q, scopedContext);
   if (regionalTransitAnswer) return regionalTransitAnswer;
+
+  const crowdingRouteOnly = wantsCrowding ? findRouteInText(q) : undefined;
+  if (crowdingRouteOnly && !scopedContext.stopId) {
+    return {
+      matchedIntent: "crowding",
+      confidence: 82,
+      context: {
+        ...scopedContext,
+        routeId: crowdingRouteOnly,
+        lastIntent: "crowding",
+      },
+      text: localizedRouteCrowdingUnavailable(crowdingRouteOnly, q),
+    };
+  }
 
   try {
     const explicitRoute = findRouteInText(q);
