@@ -116,6 +116,8 @@ REGIONAL_TRANSIT_ARRIVALS_DB_PATH=./data/regional-arrivals.sqlite
 TICKETMASTER_API_KEY=optional_ticketmaster_discovery_api_key
 TOMTOM_API_KEY=optional_tomtom_traffic_api_key
 GOOGLE_MAPS_API_KEY=optional_backend_google_maps_platform_key
+RESEND_API_KEY=optional_resend_feedback_email_key
+FEEDBACK_FROM_EMAIL="Milk Transit Feedback <onboarding@resend.dev>"
 ```
 
 `GEMINI_API_KEY` is used only by the Express API server for chatbot intent classification and answer verification/correction. Do not put this key in a `VITE_` variable, because Vite exposes those values to the browser bundle.
@@ -135,6 +137,8 @@ GOOGLE_MAPS_API_KEY=optional_backend_google_maps_platform_key
 `TICKETMASTER_API_KEY` enables live Toronto sports, concert, festival, and entertainment event lookups through the Ticketmaster Discovery API. If it is not set, the app falls back to local major-venue pressure estimates for Toronto.
 
 `TOMTOM_API_KEY` enables live Toronto traffic flow and incident lookups through the TomTom Traffic API. The prediction algorithm uses live road speed, free-flow speed, road closure, accident, congestion, and roadwork signals when available. If it is not set or the API request fails, the app falls back to the local time-of-day, route-demand, and downtown-pressure traffic estimate.
+
+`RESEND_API_KEY` enables the in-app feedback form to send email to the configured site owner. Keep this value server-side only. `FEEDBACK_FROM_EMAIL` can stay on Resend's onboarding sender for testing, or use a verified sender domain for production.
 
 Holiday awareness uses the public Nager.Date holiday API for Canadian/Ontario public holidays. If that request fails, the app falls back to a small local set of fixed-date Ontario holidays.
 
