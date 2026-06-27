@@ -47,6 +47,57 @@ export interface TransitAssistantIntentContext {
   destinationId?: string;
   lastIntent?: TransitAssistantIntent;
   aroundScope?: TransitAssistantIntentScope;
+  lastRecommendationQuery?: string;
+  lastRecommendationKind?: "shopping" | "food" | "places" | "plan";
+  lastRecommendations?: unknown[];
+  currentTopic?: string;
+  currentLocalInfoIntent?: ConversationUnderstandingIntent;
+  mentionedPlaces?: string[];
+  userOrigin?: string;
+  date?: string;
+  targetGroup?: string;
+  compareBy?: ConversationCompareBy;
+}
+
+export type ConversationUnderstandingIntent =
+  | "ticket_price"
+  | "opening_hours"
+  | "distance"
+  | "gas_price"
+  | "price_comparison"
+  | "recommendation"
+  | "route"
+  | "local_info"
+  | "clarification"
+  | "unknown";
+
+export type ConversationCompareBy =
+  | "price"
+  | "distance"
+  | "time"
+  | "rating"
+  | "open_now"
+  | "none";
+
+export interface ConversationUnderstandingResult {
+  isFollowUp: boolean;
+  resolvedQuestion: string;
+  intent: ConversationUnderstandingIntent;
+  entity?: string;
+  targetGroup?: string;
+  time?: string;
+  compareBy: ConversationCompareBy;
+  missingSlots: string[];
+  needsApi: boolean;
+  apiType:
+    | "google_places"
+    | "google_routes"
+    | "official_ticket_lookup"
+    | "fuel_price"
+    | "web_price_lookup"
+    | "none";
+  confidence: number;
+  reason?: string;
 }
 
 const VALID_INTENTS = new Set<TransitAssistantIntent>([
@@ -154,6 +205,77 @@ function normalizeAnswerVerificationResult(
   };
 }
 
+function normalizeConversationUnderstandingResult(
+  value: unknown,
+  fallbackInput: string,
+): ConversationUnderstandingResult {
+  if (!value || typeof value !== "object") {
+    throw new Error("Conversation resolver response was not an object");
+  }
+
+  const record = value as Record<string, unknown>;
+  const intent = typeof record.intent === "string" ? record.intent : "unknown";
+  const validIntent: ConversationUnderstandingIntent = [
+    "ticket_price",
+    "opening_hours",
+    "distance",
+    "gas_price",
+    "price_comparison",
+    "recommendation",
+    "route",
+    "local_info",
+    "clarification",
+    "unknown",
+  ].includes(intent)
+    ? intent as ConversationUnderstandingIntent
+    : "unknown";
+  const compareBy = typeof record.compareBy === "string" ? record.compareBy : "none";
+  const validCompareBy: ConversationCompareBy = [
+    "price",
+    "distance",
+    "time",
+    "rating",
+    "open_now",
+    "none",
+  ].includes(compareBy)
+    ? compareBy as ConversationCompareBy
+    : "none";
+  const apiType = typeof record.apiType === "string" ? record.apiType : "none";
+  const validApiType: ConversationUnderstandingResult["apiType"] = [
+    "google_places",
+    "google_routes",
+    "official_ticket_lookup",
+    "fuel_price",
+    "web_price_lookup",
+    "none",
+  ].includes(apiType)
+    ? apiType as ConversationUnderstandingResult["apiType"]
+    : "none";
+  const confidence = Number(record.confidence);
+  const missingSlots = Array.isArray(record.missingSlots)
+    ? record.missingSlots.filter((slot): slot is string => typeof slot === "string")
+    : [];
+
+  return {
+    isFollowUp: record.isFollowUp === true,
+    resolvedQuestion: typeof record.resolvedQuestion === "string" && record.resolvedQuestion.trim()
+      ? record.resolvedQuestion.trim()
+      : fallbackInput,
+    intent: validIntent,
+    entity: typeof record.entity === "string" && record.entity.trim() ? record.entity.trim() : undefined,
+    targetGroup: typeof record.targetGroup === "string" && record.targetGroup.trim() ? record.targetGroup.trim() : undefined,
+    time: typeof record.time === "string" && record.time.trim() ? record.time.trim() : undefined,
+    compareBy: validCompareBy,
+    missingSlots,
+    needsApi: record.needsApi !== false,
+    apiType: validApiType,
+    confidence: Number.isFinite(confidence)
+      ? Math.max(0, Math.min(100, Math.round(confidence)))
+      : 60,
+    reason: typeof record.reason === "string" ? record.reason : undefined,
+  };
+}
+
 async function requestGeminiJson(prompt: string): Promise<unknown> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -220,12 +342,12 @@ export async function classifyTransitAssistantIntent(
     "- holidays: public holidays, statutory holidays, long weekends, holiday greetings.",
     "- crowding: passenger load, seats, packed vehicles.",
     "- navigation: directions, trip planning, how to get to a destination, departure-time planning, and route options across Toronto/GTA transit, including messages like 'plan a trip tomorrow to CN Tower', 'I want to go to Union at 8', 'from Oakville to Union', or Chinese equivalents.",
-    "- recommendation: direct requests for recommended places, restaurants, food, cafes, attractions, parks, shopping, or things to do, especially with wording like recommend, suggestions, best, any good, where to eat, restaurants around CN Tower, parks near me.",
-    "- guide: broader travel guide, itinerary, tourism plan, day plan, date ideas, family plans, rainy-day plans, or multi-stop Toronto plans.",
+    "- recommendation: direct requests for recommended places, restaurants, food, cafes, attractions, parks, shopping, buying something, stores, malls, cheapest/closest/best options, or things to do, especially with wording like recommend, suggestions, best, any good, where to eat, where to buy, restaurants around CN Tower, parks near me.",
+    "- guide: broader travel guide, itinerary, tourism plan, day plan, date ideas, family plans, rainy-day plans, shopping plan, errand plan, or multi-stop Toronto plans.",
     "- help: transit-related but missing needed details or clarification.",
     "- out-of-scope: not about Toronto/GTA transit, commuting, routing, stops, traffic, weather, events, holidays, or crowding.",
     "Transit scope includes TTC, GO Transit, MiWay, YRT/Viva, Brampton Transit, Oakville Transit, Durham Region Transit, and similar GTA local transit.",
-    "Use context for follow-ups like 'what about now' or 'why'.",
+    "Use context for follow-ups like 'what about now', 'why', 'cheapest one', 'closest one', 'highest rated', 'make it a plan', or Chinese equivalents.",
     "Scope rules:",
     "- scope only applies to weather, traffic, events, crowding, recommendation, and guide.",
     "- Use scope.kind='current' for around me, near me, nearby me, my location, current location, or here.",
@@ -257,6 +379,53 @@ export async function classifyTransitAssistantIntent(
         input,
         context,
         model: process.env.GEMINI_MODEL ?? DEFAULT_MODEL,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    throw error;
+  }
+}
+
+export async function resolveConversationUnderstanding(
+  input: string,
+  context: TransitAssistantIntentContext = {},
+): Promise<ConversationUnderstandingResult> {
+  const prompt = [
+    "You are the Conversation Understanding Layer for Milk bot, a Toronto/GTA local transit and local-life assistant.",
+    "Resolve the user's message into a complete structured task before any API calls or final answer.",
+    "Return only JSON with this schema:",
+    "{\"isFollowUp\":true|false,\"resolvedQuestion\":\"standalone complete question\",\"intent\":\"ticket_price|opening_hours|distance|gas_price|price_comparison|recommendation|route|local_info|clarification|unknown\",\"entity\":\"resolved place/business/topic or null\",\"targetGroup\":\"adult|child|student|senior|family|none or other\",\"time\":\"today|tomorrow|date/time phrase or null\",\"compareBy\":\"price|distance|time|rating|open_now|none\",\"missingSlots\":[\"location|date|age_group|party_size|transport_mode|service_type|budget\"],\"needsApi\":true|false,\"apiType\":\"google_places|google_routes|official_ticket_lookup|fuel_price|web_price_lookup|none\",\"confidence\":0-100,\"reason\":\"short\"}.",
+    "Use conversation memory. Follow-up examples:",
+    "- 'children?' after 'ROM ticket price' means child ticket price for Royal Ontario Museum.",
+    "- 'tomorrow?' after 'Toronto Zoo hours' means Toronto Zoo opening hours tomorrow.",
+    "- 'is it far?' after a place means distance/route from the user's origin or current location.",
+    "- 'cheapest one?' after a list means compare previous results by price.",
+    "Resolve pronouns like it, there, this, that, 那个, 那里, 这个 to context.currentTopic or recent mentioned places.",
+    "Do not ask for every missing slot. Include missingSlots only when it materially affects accuracy.",
+    "Prefer a useful default, usually Toronto/current map location/today, when possible.",
+    `Context memory: ${JSON.stringify(context)}`,
+    `User message: ${input}`,
+  ].join("\n");
+
+  try {
+    const result = normalizeConversationUnderstandingResult(
+      await requestGeminiJson(prompt),
+      input,
+    );
+
+    if (isIntentDebugEnabled()) {
+      console.log("[milkbot context resolver]", {
+        input,
+        context,
+        result,
+      });
+    }
+
+    return result;
+  } catch (error) {
+    if (isIntentDebugEnabled()) {
+      console.log("[milkbot context resolver error]", {
+        input,
         error: error instanceof Error ? error.message : String(error),
       });
     }

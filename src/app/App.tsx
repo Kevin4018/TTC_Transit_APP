@@ -1895,6 +1895,21 @@ function AiChatbot({ appContext }: { appContext?: TransitAssistantContext }) {
 
     try {
       const answer = await askTransitAssistant(text, assistantContext);
+      if (import.meta.env?.VITE_ASSISTANT_DEBUG === "true" && answer.context?.lastUnderstanding) {
+        console.groupCollapsed("[Milk bot understanding]");
+        console.log("user", text);
+        console.log("resolved", answer.context.lastUnderstanding);
+        console.log("memory", {
+          currentTopic: answer.context.currentTopic,
+          currentLocalInfoIntent: answer.context.currentLocalInfoIntent,
+          mentionedPlaces: answer.context.mentionedPlaces,
+          date: answer.context.date,
+          targetGroup: answer.context.targetGroup,
+          compareBy: answer.context.compareBy,
+          missingSlots: answer.context.missingSlots,
+        });
+        console.groupEnd();
+      }
       if (answer.context) setAssistantContext(answer.context);
       setMessages(prev => [...prev, { role: "ai", text: answer.text }]);
     } catch {
@@ -1977,7 +1992,7 @@ function AiChatbot({ appContext }: { appContext?: TransitAssistantContext }) {
                         Ask Milk bot
                       </p>
                       <p className="font-['Inter',system-ui,sans-serif] text-[12px] leading-[1.35] text-[#767676]">
-                        TTC, trips, delays, weather, events, and Toronto recommendations.
+                        TTC, GTA transit, trips, delays, weather, events, and local recommendations.
                       </p>
                     </div>
                   </div>

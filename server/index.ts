@@ -5,7 +5,9 @@ import express from "express";
 import constructionRouter from "./routes/construction";
 import eventsRouter from "./routes/events";
 import holidaysRouter from "./routes/holidays";
+import localInfoRouter from "./routes/localInfo";
 import placesRouter from "./routes/places";
+import regionalTransitRouter from "./routes/regionalTransit";
 import ttcRouter from "./routes/ttc";
 import trafficRouter from "./routes/traffic";
 import weatherRouter from "./routes/weather";
@@ -27,6 +29,8 @@ app.use("/api/construction", constructionRouter);
 app.use("/api/events", eventsRouter);
 app.use("/api/holidays", holidaysRouter);
 app.use("/api/places", placesRouter);
+app.use("/api/local-info", localInfoRouter);
+app.use("/api/regional-transit", regionalTransitRouter);
 
 app.use(
   (
