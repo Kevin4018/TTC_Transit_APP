@@ -7,8 +7,14 @@ export interface FeedbackPayload {
   deviceInfo?: string;
 }
 
-export function sendFeedback(payload: FeedbackPayload): Promise<{ ok: boolean }> {
-  return apiRequest<{ ok: boolean }>("/api/feedback", {
+export interface FeedbackResponse {
+  ok: boolean;
+  fallbackMailtoUrl?: string;
+  message?: string;
+}
+
+export function sendFeedback(payload: FeedbackPayload): Promise<FeedbackResponse> {
+  return apiRequest<FeedbackResponse>("/api/feedback", {
     method: "POST",
     body: payload,
   });

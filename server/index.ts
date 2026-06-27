@@ -1,6 +1,7 @@
 import cors from "cors";
 import "dotenv/config";
 import express from "express";
+import { pathToFileURL } from "node:url";
 
 import constructionRouter from "./routes/construction";
 import eventsRouter from "./routes/events";
@@ -14,7 +15,6 @@ import trafficRouter from "./routes/traffic";
 import weatherRouter from "./routes/weather";
 
 const app = express();
-const port = Number(process.env.PORT ?? 3001);
 
 app.use(cors());
 app.use(express.json());
@@ -49,6 +49,14 @@ app.use(
   },
 );
 
-app.listen(port, () => {
-  console.log(`API server running on http://localhost:${port}`);
-});
+const isDirectRun = Boolean(process.argv[1]) &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectRun) {
+  const port = Number(process.env.PORT ?? 3001);
+  app.listen(port, () => {
+    console.log(`API server running on http://localhost:${port}`);
+  });
+}
+
+export default app;

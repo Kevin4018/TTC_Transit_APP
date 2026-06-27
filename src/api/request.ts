@@ -1,4 +1,4 @@
-const DEFAULT_API_BASE_URL = "http://localhost:3001";
+const DEFAULT_DEV_API_BASE_URL = "http://localhost:3001";
 
 export interface ApiRequestOptions extends Omit<RequestInit, "body"> {
   body?: unknown;
@@ -18,7 +18,8 @@ export class ApiError extends Error {
 }
 
 const getApiBaseUrl = () =>
-  import.meta.env?.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL;
+  import.meta.env?.VITE_API_BASE_URL ??
+  (import.meta.env?.PROD ? "" : DEFAULT_DEV_API_BASE_URL);
 
 const buildUrl = (
   path: string,
@@ -26,7 +27,10 @@ const buildUrl = (
 ) => {
   const baseUrl = getApiBaseUrl().replace(/\/$/, "");
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  const url = new URL(`${baseUrl}${normalizedPath}`);
+  const url = new URL(
+    `${baseUrl}${normalizedPath}`,
+    typeof window === "undefined" ? "http://localhost" : window.location.origin,
+  );
 
   Object.entries(params ?? {}).forEach(([key, value]) => {
     if (value !== null && value !== undefined) {

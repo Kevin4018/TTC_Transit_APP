@@ -14,6 +14,28 @@ function escapeHtml(value: string) {
     .replace(/'/g, "&#39;");
 }
 
+function buildMailtoUrl({
+  message,
+  email,
+  page,
+  deviceInfo,
+}: {
+  message: string;
+  email: string;
+  page: string;
+  deviceInfo: string;
+}) {
+  const body = [
+    message,
+    "",
+    email ? `User email: ${email}` : "User email: Not provided",
+    page ? `Page: ${page}` : "Page: Unknown",
+    deviceInfo ? `Device: ${deviceInfo}` : "Device: Unknown",
+  ].join("\n");
+
+  return `mailto:${FEEDBACK_TO_EMAIL}?subject=${encodeURIComponent("New feedback from Milk Transit")}&body=${encodeURIComponent(body)}`;
+}
+
 router.post("/", async (req, res, next) => {
   try {
     const message = String(req.body?.message ?? "").trim();
@@ -28,7 +50,11 @@ router.post("/", async (req, res, next) => {
 
     const apiKey = process.env.RESEND_API_KEY;
     if (!apiKey) {
-      res.status(501).json({ message: "Feedback email is not configured. Set RESEND_API_KEY on the server." });
+      res.status(202).json({
+        ok: false,
+        fallbackMailtoUrl: buildMailtoUrl({ message, email, page, deviceInfo }),
+        message: "Feedback email delivery is not configured, so a prefilled email draft was created.",
+      });
       return;
     }
 

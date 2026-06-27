@@ -2008,7 +2008,7 @@ const getGoogleMapsApiKey = () =>
   process.env.GOOGLE_MAPS_API_KEY ?? process.env.GOOGLE_DIRECTIONS_API_KEY;
 
 const getRoutingProvider = () => {
-  const provider = (process.env.ROUTING_PROVIDER ?? "otp").toLowerCase();
+  const provider = (process.env.ROUTING_PROVIDER ?? "auto").toLowerCase();
   return provider === "google" || provider === "auto" ? provider : "otp";
 };
 
@@ -2461,6 +2461,12 @@ export const getNavigationRoute = async (
 
     if (provider === "otp") {
       return getOtpNavigationRoute(dest, originCoordinates, mode, departureTime)
+        .then(async (otpRoute) => {
+          if (otpRoute?.available === true || !hasGoogleKey) return otpRoute;
+
+          const googleRoute = await getGoogleNavigationRoute(dest, originCoordinates, mode, departureTime);
+          return googleRoute?.available === true ? googleRoute : otpRoute ?? googleRoute;
+        })
         .then((route) => route ?? getRealRoutingConfigurationRequiredRoute(dest, originCoordinates, mode));
     }
 

@@ -1805,7 +1805,7 @@ const FeedbackIcon = ({ fill = "#1D1B20" }: { fill?: string }) => (
   </svg>
 );
 
-type FeedbackStatus = "idle" | "sending" | "sent" | "error";
+type FeedbackStatus = "idle" | "sending" | "sent" | "draft" | "error";
 
 function FeedbackButton() {
   const [open, setOpen] = useState(false);
@@ -1822,18 +1822,24 @@ function FeedbackButton() {
     setError("");
 
     try {
-      await sendFeedback({
+      const response = await sendFeedback({
         message: trimmed,
         email: email.trim() || undefined,
         page: window.location.href,
         deviceInfo: navigator.userAgent,
       });
-      setStatus("sent");
+
+      if (response.fallbackMailtoUrl) {
+        window.location.href = response.fallbackMailtoUrl;
+        setStatus("draft");
+      } else {
+        setStatus("sent");
+      }
       setMessage("");
       setEmail("");
     } catch (sendError) {
       setStatus("error");
-      setError(sendError instanceof Error ? sendError.message : "Could not send feedback right now.");
+      setError("Could not send feedback right now. Please try again in a moment.");
     }
   }
 
@@ -1924,6 +1930,11 @@ function FeedbackButton() {
               {status === "sent" && (
                 <p className="mt-3 font-['Inter',system-ui,sans-serif] text-[13px] text-[#167c3a]">
                   Feedback sent. Thank you.
+                </p>
+              )}
+              {status === "draft" && (
+                <p className="mt-3 font-['Inter',system-ui,sans-serif] text-[13px] text-[#167c3a]">
+                  Email draft opened. Please send it from your mail app.
                 </p>
               )}
               {status === "error" && (
